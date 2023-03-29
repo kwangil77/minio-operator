@@ -14,7 +14,7 @@ operator:
     tag: v5.0.1
     pullPolicy: IfNotPresent
   imagePullSecrets: [ ]
-  initcontainers: [ ]
+  initContainers: [ ]
   replicaCount: 2
   securityContext:
     runAsUser: 1000
@@ -44,6 +44,8 @@ operator:
       cpu: 200m
       memory: 256Mi
       ephemeral-storage: 500Mi
+  service:
+    type: ClusterIP
 
 console:
   image:
@@ -51,7 +53,7 @@ console:
     tag: v5.0.1
     pullPolicy: IfNotPresent
   imagePullSecrets: [ ]
-  initcontainers: [ ]
+  initContainers: [ ]
   replicaCount: 1
   nodeSelector: { }
   affinity: { }
@@ -64,6 +66,8 @@ console:
   containerSecurityContext:
     runAsUser: 1000
     runAsNonRoot: true
+  service:
+    type: ClusterIP
   ingress:
     enabled: false
     ingressClassName: ""

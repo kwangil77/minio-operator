@@ -6,7 +6,7 @@ metadata:
   labels:
     {{- include "minio-operator.labels" . | nindent 4 }}
 spec:
-  type: ClusterIP
+  type: {{ .Values.console.service.type }}
   ports:
     - port: 4221
       name: http
