@@ -19,27 +19,27 @@ KUSTOMIZE_CRDS=$(KUSTOMIZE_HOME)/base/crds/
 
 PLUGIN_HOME=kubectl-minio
 
-LOGSEARCHAPI=logsearchapi
-
 all: build
 
 getdeps:
 	@echo "Checking dependencies"
 	@mkdir -p ${GOPATH}/bin
 	@echo "Installing golangci-lint" && \
-		go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.49.0 && \
+		go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.51.2 && \
 		echo "Installing govulncheck" && \
 		go install golang.org/x/vuln/cmd/govulncheck@latest
 
-verify: getdeps govet gotest lint
+verify: getdeps govet lint
 
-operator: verify
+binary:
 	@CGO_ENABLED=0 GOOS=linux go build -trimpath --ldflags $(LDFLAGS) -o minio-operator ./cmd/operator
 
-docker: operator logsearchapi
+operator: assets binary
+
+docker: operator
 	@docker build --no-cache -t $(TAG) .
 
-build: regen-crd verify plugin logsearchapi operator docker
+build: regen-crd verify plugin operator docker
 
 install: all
 
@@ -67,10 +67,12 @@ regen-crd:
 	@go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.11.1
 	@${GOPATH}/bin/controller-gen crd:maxDescLen=0,generateEmbeddedObjectMeta=true paths="./..." output:crd:artifacts:config=$(KUSTOMIZE_CRDS)
 	@sed 's#namespace: minio-operator#namespace: {{ .Release.Namespace }}#g' resources/base/crds/minio.min.io_tenants.yaml > $(HELM_TEMPLATES)/minio.min.io_tenants.yaml
+	@sed 's#namespace: minio-operator#namespace: {{ .Release.Namespace }}#g' resources/base/crds/sts.min.io_policybindings.yaml > $(HELM_TEMPLATES)/sts.min.io_policybindings.yaml
 
 regen-crd-docs:
 	@which crd-ref-docs 1>/dev/null || (echo "Installing crd-ref-docs" && GO111MODULE=on go install -v github.com/elastic/crd-ref-docs@latest)
-	@${GOPATH}/bin/crd-ref-docs --source-path=./pkg/apis/minio.min.io/v2 --config=docs/templates/config.yaml --renderer=asciidoctor --output-path=docs/crd.adoc --templates-dir=docs/templates/asciidoctor/
+	@${GOPATH}/bin/crd-ref-docs --source-path=./pkg/apis/minio.min.io/v2  --config=docs/templates/config.yaml --renderer=asciidoctor --output-path=docs/tenant_crd.adoc --templates-dir=docs/templates/asciidoctor/
+	@${GOPATH}/bin/crd-ref-docs --source-path=./pkg/apis/sts.min.io/v1alpha1  --config=docs/templates/config.yaml --renderer=asciidoctor --output-path=docs/policybinding_crd.adoc --templates-dir=docs/templates/asciidoctor/
 
 plugin: regen-crd
 	@echo "Building 'kubectl-minio' binary"
@@ -80,20 +82,6 @@ plugin: regen-crd
 		GO111MODULE=on ${GOPATH}/bin/golangci-lint cache clean && \
 		GO111MODULE=on ${GOPATH}/bin/golangci-lint run --timeout=5m --config ../.golangci.yml)
 
-.PHONY: logsearchapi
-logsearchapi: getdeps
-	@echo "Building 'logsearchapi' binary"
-	@(cd $(LOGSEARCHAPI); \
-		go vet ./... && \
-		go test -race ./... && \
-		GO111MODULE=on ${GOPATH}/bin/golangci-lint cache clean && \
-		GO111MODULE=on ${GOPATH}/bin/golangci-lint run --timeout=5m --config ../.golangci.yml && \
-		CGO_ENABLED=0 GOOS=linux go build --ldflags "-s -w" -trimpath -o ../logsearchapi-bin )
-
-getconsoleuiyaml:
-	@echo "Getting the latest Console UI"
-	@kustomize build github.com/minio/console/k8s/operator-console/base > resources/base/console-ui.yaml
-	@echo "Done"
 
 generate-code:
 	@./k8s/update-codegen.sh
@@ -101,5 +89,40 @@ generate-code:
 generate-openshift-manifests:
 	@./olm.sh
 
-release: generate-openshift-manifests
+release: assets generate-openshift-manifests
 	@./release.sh
+
+apply-gofmt:
+	@echo "Applying gofmt to all generated an existing files"
+	@GO111MODULE=on gofmt -w .
+
+clean-swagger:
+	@echo "cleaning"
+	@rm -rf models
+	@rm -rf api/operations
+
+swagger-operator:
+	@echo "Generating swagger server code from yaml"
+	@swagger generate server -A operator --main-package=operator --server-package=api --exclude-main -P models.Principal -f ./swagger.yml -r NOTICE
+	@echo "Generating typescript api"
+	@npx swagger-typescript-api -p ./swagger.yml -o ./web-app/src/api -n operatorApi.ts
+	@(cd web-app && npm install -g prettier && prettier -w .)
+
+swagger-gen: clean-swagger swagger-operator apply-gofmt
+	@echo "Done Generating swagger server code from yaml"
+
+assets:
+	@(if [ -f "${NVM_DIR}/nvm.sh" ]; then \. "${NVM_DIR}/nvm.sh" && nvm install && nvm use && npm install -g yarn ; fi &&\
+	  cd web-app; yarn install --prefer-offline; make build-static; yarn prettier --write . --loglevel warn; cd ..)
+
+test-unit-test-operator:
+	@echo "execute unit test and get coverage for api"
+	@(cd api && mkdir coverage && GO111MODULE=on go test -test.v -coverprofile=coverage/coverage-unit-test-operatorapi.out)
+
+test-operator-integration:
+	@(echo "Start cd operator-integration && go test:")
+	@(pwd)
+	@(cd operator-integration && go test -coverpkg=../api -c -tags testrunmain . && mkdir -p coverage && ./operator-integration.test -test.v -test.run "^Test*" -test.coverprofile=coverage/operator-api.out)
+
+test-operator:
+	@(env bash $(PWD)/web-app/tests/scripts/operator.sh)

@@ -46,7 +46,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/golang-jwt/jwt"
-	"github.com/minio/madmin-go"
+	"github.com/minio/madmin-go/v2"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/minio/minio-go/v7/pkg/s3utils"
@@ -54,29 +54,16 @@ import (
 
 // Webhook API constants
 const (
-	WebhookAPIVersion       = "/webhook/v1"
-	WebhookDefaultPort      = "4222"
-	WebhookSecret           = "operator-webhook-secret"
-	WebhookOperatorUsername = "webhookUsername"
-	WebhookOperatorPassword = "webhookPassword"
-
-	// Webhook environment variable constants
-	WebhookMinIOArgs   = "MINIO_ARGS"
-	WebhookMinIOBucket = "MINIO_DNS_WEBHOOK_ENDPOINT"
-
 	MinIOServerURL          = "MINIO_SERVER_URL"
 	MinIODomain             = "MINIO_DOMAIN"
 	MinIOBrowserRedirectURL = "MINIO_BROWSER_REDIRECT_URL"
-
-	MinIORootUser     = "MINIO_ROOT_USER"
-	MinIORootPassword = "MINIO_ROOT_PASSWORD"
 
 	defaultPrometheusJWTExpiry = 100 * 365 * 24 * time.Hour
 )
 
 // envGet retrieves the value of the environment variable named
 // by the key. If the variable is present in the environment the
-// value (which may be empty) is returned. Otherwise it returns
+// value (which may be empty) is returned. Otherwise, it returns
 // the specified default value.
 func envGet(key, defaultValue string) string {
 	if v, ok := os.LookupEnv(key); ok {
@@ -84,14 +71,6 @@ func envGet(key, defaultValue string) string {
 	}
 	return defaultValue
 }
-
-// List of webhook APIs
-const (
-	WebhookAPIGetenv        = WebhookAPIVersion + "/getenv"
-	WebhookAPIBucketService = WebhookAPIVersion + "/bucketsrv"
-	WebhookAPIUpdate        = WebhookAPIVersion + "/update"
-	WebhookCRDConversaion   = WebhookAPIVersion + "/crd-conversion"
-)
 
 type hostsTemplateValues struct {
 	StatefulSet string
@@ -102,30 +81,23 @@ type hostsTemplateValues struct {
 }
 
 var (
-	once                              sync.Once
-	tenantMinIOImageOnce              sync.Once
-	tenantKesImageOnce                sync.Once
-	monitoringIntervalOnce            sync.Once
-	k8sClusterDomain                  string
-	tenantMinIOImage                  string
-	tenantKesImage                    string
-	monitoringInterval                int
-	prometheusNamespace               string
-	prometheusName                    string
-	prometheusNamespaceOnce           sync.Once
-	prometheusNameOnce                sync.Once
-	prometheusDefaultImageOnce        sync.Once
-	prometheusDefaultImage            = PrometheusImage
-	prometheusSidecarDefaultImageOnce sync.Once
-	prometheusSicecarDefaultImage     = PrometheusSideCarImage
-	prometheusInitDefaultImageOnce    sync.Once
-	prometheusInitDefaultImage        = PrometheusInitImage
-	searchDefaultImageOnce            sync.Once
-	searchDefaultImage                = DefaultLogSearchAPIImage
-	searchInitDefaultImageOnce        sync.Once
-	searchInitDefaultImage            = InitContainerImage
-	pgDefaultImageOnce                sync.Once
-	pgDefaultImage                    = LogPgImage
+	once                    sync.Once
+	tenantMinIOImageOnce    sync.Once
+	tenantKesImageOnce      sync.Once
+	monitoringIntervalOnce  sync.Once
+	k8sClusterDomain        string
+	tenantMinIOImage        string
+	tenantKesImage          string
+	monitoringInterval      int
+	prometheusNamespace     string
+	prometheusName          string
+	prometheusNamespaceOnce sync.Once
+	prometheusNameOnce      sync.Once
+	// gcpAppCredentialENV to denote the GCP APP credential path
+	gcpAppCredentialENV = corev1.EnvVar{
+		Name:  "GOOGLE_APPLICATION_CREDENTIALS",
+		Value: "/var/run/secrets/tokens/gcp-ksa/google-application-credentials.json",
+	}
 )
 
 // GetPodCAFromFile assumes the operator is running inside a k8s pod and extract the
@@ -384,33 +356,11 @@ func (t *Tenant) EnsureDefaults() *Tenant {
 		if t.Spec.KES.KeyName == "" {
 			t.Spec.KES.KeyName = KESMinIOKey
 		}
-	}
-
-	if t.HasPrometheusEnabled() {
-		if t.Spec.Prometheus.Image == "" {
-			t.Spec.Prometheus.Image = GetPrometheusImage()
-		}
-		if t.Spec.Prometheus.SideCarImage == "" {
-			t.Spec.Prometheus.SideCarImage = GetPrometheusSidecarImage()
-		}
-		if t.Spec.Prometheus.InitImage == "" {
-			t.Spec.Prometheus.InitImage = GetPrometheusInitImage()
+		if t.HasGCPCredentialSecretForKES() && t.Spec.KES.ServiceAccountName == "" {
+			t.Spec.KES.ServiceAccountName = "default"
 		}
 	}
 
-	if t.HasLogSearchAPIEnabled() {
-		if t.Spec.Log.Image == "" {
-			t.Spec.Log.Image = GetSearchImage()
-		}
-		if t.Spec.Log.Db != nil {
-			if t.Spec.Log.Db.Image == "" {
-				t.Spec.Log.Db.Image = GetPgImage()
-			}
-			if t.Spec.Log.Db.InitImage == "" {
-				t.Spec.Log.Db.InitImage = GetSearchInitImage()
-			}
-		}
-	}
 	// ServiceAccount
 	if t.Spec.ServiceAccountName == "" {
 		t.Spec.ServiceAccountName = fmt.Sprintf("%s-sa", t.Name)
@@ -554,28 +504,12 @@ func (t *Tenant) KESServiceHost() string {
 
 // BucketDNS indicates if Bucket DNS feature is enabled.
 func (t *Tenant) BucketDNS() bool {
-	// we've deprecated .spec.s3 and will top working in future releases of operator
-	return (t.Spec.Features != nil && t.Spec.Features.BucketDNS) || (t.Spec.S3 != nil && t.Spec.S3.BucketDNS)
+	return (t.Spec.Features != nil && t.Spec.Features.BucketDNS)
 }
 
 // HasKESEnabled checks if kes configuration is provided by user
 func (t *Tenant) HasKESEnabled() bool {
 	return t.Spec.KES != nil
-}
-
-// HasLogSearchAPIEnabled checks if Log feature has been enabled
-func (t *Tenant) HasLogSearchAPIEnabled() bool {
-	return t.Spec.Log != nil
-}
-
-// HasLogDBEnabled checks if Log DB feature has been enabled
-func (t *Tenant) HasLogDBEnabled() bool {
-	return t.Spec.Log != nil && t.Spec.Log.Db != nil
-}
-
-// HasPrometheusEnabled checks if Prometheus metrics has been enabled
-func (t *Tenant) HasPrometheusEnabled() bool {
-	return t.Spec.Prometheus != nil
 }
 
 // HasPrometheusOperatorEnabled checks if Prometheus service monitor has been enabled
@@ -588,28 +522,14 @@ func (t *Tenant) GetEnvVars() (env []corev1.EnvVar) {
 	return t.Spec.Env
 }
 
-// GetLogSearchAPIEnvVars returns the environment variables for Log Search Api deployment.
-func (t *Tenant) GetLogSearchAPIEnvVars() (env []corev1.EnvVar) {
-	if !t.HasLogSearchAPIEnabled() {
-		return env
-	}
-	return t.Spec.Log.Env
+// HasGCPCredentialSecretForKES returns if GCP cred secret is set in KES for fleet workload identity support.
+func (t *Tenant) HasGCPCredentialSecretForKES() bool {
+	return t.HasKESEnabled() && t.Spec.KES.GCPCredentialSecretName != ""
 }
 
-// GetLogDBEnvVars returns the environment variables for Postgres deployment.
-func (t *Tenant) GetLogDBEnvVars() (env []corev1.EnvVar) {
-	if !t.HasLogDBEnabled() {
-		return env
-	}
-	return t.Spec.Log.Db.Env
-}
-
-// GetPrometheusEnvVars returns the environment variables for the Prometheus deployment.
-func (t *Tenant) GetPrometheusEnvVars() (env []corev1.EnvVar) {
-	if !t.HasPrometheusEnabled() {
-		return env
-	}
-	return t.Spec.Prometheus.Env
+// HasGCPWorkloadIdentityPoolForKES returns if GCP worload identity pool secret is set in KES for fleet workload identity support.
+func (t *Tenant) HasGCPWorkloadIdentityPoolForKES() bool {
+	return t.HasKESEnabled() && t.Spec.KES.GCPWorkloadIdentityPool != ""
 }
 
 // GetKESEnvVars returns the environment variables for the KES deployment.
@@ -617,7 +537,11 @@ func (t *Tenant) GetKESEnvVars() (env []corev1.EnvVar) {
 	if !t.HasKESEnabled() {
 		return env
 	}
-	return t.Spec.KES.Env
+	env = t.Spec.KES.Env
+	if t.HasGCPCredentialSecretForKES() {
+		env = append(env, gcpAppCredentialENV)
+	}
+	return env
 }
 
 // UpdateURL returns the URL for the sha256sum location of the new binary
@@ -891,6 +815,16 @@ func (t *Tenant) Validate() error {
 
 	if !t.HasConfigurationSecret() && !t.HasCredsSecret() {
 		return errors.New("please set 'configuration' secret with credentials for Tenant")
+	}
+
+	if t.HasKESEnabled() {
+		switch {
+		case t.HasGCPCredentialSecretForKES() && !t.HasGCPWorkloadIdentityPoolForKES():
+			return errors.New("please set 'gcpWorkloadIdentityPool' to enable fleet workload identity")
+		case t.HasGCPWorkloadIdentityPoolForKES() && !t.HasGCPCredentialSecretForKES():
+			return errors.New("plese set the 'gcpCredentialSecretName' to enable fleet workload identity")
+		default:
+		}
 	}
 
 	// Every pool must contain a Volume Claim Template
@@ -1275,72 +1209,6 @@ func lcp(strs []string, pre bool) string {
 		}
 	}
 	return xfix
-}
-
-// GetPrometheusImage returns the defaulted prometheus image
-func GetPrometheusImage() string {
-	// will make sure to read the env value just once
-	prometheusDefaultImageOnce.Do(func() {
-		if val, ok := os.LookupEnv("MINIO_PROMETHEUS_DEFAULT_IMAGE"); ok {
-			prometheusDefaultImage = val
-		}
-	})
-	return prometheusDefaultImage
-}
-
-// GetPrometheusSidecarImage returns the defaulted prometheus sidecar image
-func GetPrometheusSidecarImage() string {
-	// will make sure to read the env value just once
-	prometheusSidecarDefaultImageOnce.Do(func() {
-		if val, ok := os.LookupEnv("MINIO_PROMETHEUS_SIDECAR_DEFAULT_IMAGE"); ok {
-			prometheusSicecarDefaultImage = val
-		}
-	})
-	return prometheusSicecarDefaultImage
-}
-
-// GetPrometheusInitImage returns the defaulted prometheus init image
-func GetPrometheusInitImage() string {
-	// will make sure to read the env value just once
-	prometheusInitDefaultImageOnce.Do(func() {
-		if val, ok := os.LookupEnv("MINIO_PROMETHEUS_INIT_DEFAULT_IMAGE"); ok {
-			prometheusInitDefaultImage = val
-		}
-	})
-	return prometheusInitDefaultImage
-}
-
-// GetSearchImage returns the defaulted search image
-func GetSearchImage() string {
-	// will make sure to read the env value just once
-	searchDefaultImageOnce.Do(func() {
-		if val, ok := os.LookupEnv("MINIO_SEARCH_DEFAULT_IMAGE"); ok {
-			searchDefaultImage = val
-		}
-	})
-	return searchDefaultImage
-}
-
-// GetSearchInitImage returns the defaulted search image
-func GetSearchInitImage() string {
-	// will make sure to read the env value just once
-	searchInitDefaultImageOnce.Do(func() {
-		if val, ok := os.LookupEnv("MINIO_SEARCH_INIT_DEFAULT_IMAGE"); ok {
-			searchInitDefaultImage = val
-		}
-	})
-	return searchInitDefaultImage
-}
-
-// GetPgImage returns the defaulted search image
-func GetPgImage() string {
-	// will make sure to read the env value just once
-	pgDefaultImageOnce.Do(func() {
-		if val, ok := os.LookupEnv("MINIO_POSTGRES_DEFAULT_IMAGE"); ok {
-			pgDefaultImage = val
-		}
-	})
-	return pgDefaultImage
 }
 
 // GetRoleName returns the role name we will use for the tenant

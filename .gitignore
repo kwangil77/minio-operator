@@ -9,11 +9,10 @@ kubectl-minio/kubectl-minio
 *.minisig
 *.zip
 kubectl-minio/crds
-logsearchapi/logsearchapi
-logsearchapi-bin
 *.log
 .vscode
 minio.yaml
 nancy
 examples/.DS_Store
-
+testing/openshift/bundle/*
+examples/**/obj/

@@ -14,8 +14,8 @@ release:
 before:
   hooks:
     - make clean
-    - go generate ./...
-    - go mod tidy -compat=1.19
+    - make swagger-gen
+    - go mod tidy -compat=1.20
     - go mod download
 
 builds:
@@ -55,25 +55,6 @@ builds:
       - CGO_ENABLED=0
     ldflags:
       - -s -w -X github.com/minio/kubectl-minio/cmd.version={{.Tag}}
-    flags:
-      - -trimpath
-    hooks:
-      post: ./package.sh {{ .Path }}
-
-  - id: logsearchapi
-    dir: logsearchapi
-    binary: logsearchapi-bin
-    goos:
-      - linux
-    goarch:
-      - arm64
-      - amd64
-      - ppc64le
-      - s390x
-    env:
-      - CGO_ENABLED=0
-    ldflags:
-      - -s -w -X main.version={{.Tag}}
     flags:
       - -trimpath
     hooks:

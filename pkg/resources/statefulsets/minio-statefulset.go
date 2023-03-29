@@ -20,6 +20,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/minio/operator/pkg/common"
+
 	miniov2 "github.com/minio/operator/pkg/apis/minio.min.io/v2"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -29,38 +31,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-// Adds required Console environment variables
-func consoleEnvVars(t *miniov2.Tenant) []corev1.EnvVar {
-	var envVars []corev1.EnvVar
-
-	if t.HasLogSearchAPIEnabled() {
-		envVars = append(envVars, corev1.EnvVar{
-			Name: miniov2.LogQueryTokenKey,
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: t.LogSecretName(),
-					},
-					Key: miniov2.LogQueryTokenKey,
-				},
-			},
-		})
-		url := fmt.Sprintf("http://%s:%d", t.LogSearchAPIServiceName(), miniov2.LogSearchAPIPort)
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  "MINIO_LOG_QUERY_URL",
-			Value: url,
-		})
-	}
-	if t.HasPrometheusEnabled() {
-		url := fmt.Sprintf("http://%s:%d", t.PrometheusHLServiceName(), miniov2.PrometheusAPIPort)
-		envVars = append(envVars, corev1.EnvVar{
-			Name:  miniov2.ConsolePrometheusURL,
-			Value: url,
-		})
-	}
-
-	return envVars
-}
+const (
+	bucketDNSEnv = "MINIO_DNS_WEBHOOK_ENDPOINT"
+)
 
 // Returns the MinIO environment variables set in configuration.
 // If a user specifies a secret in the spec (for MinIO credentials) we use
@@ -103,16 +76,14 @@ func minioEnvironmentVars(t *miniov2.Tenant, skipEnvVars map[string][]byte, opVe
 	// Enable Bucket DNS only if asked for by default turned off
 	if t.BucketDNS() {
 		domains = append(domains, t.MinIOBucketBaseDomain())
-		envVarsMap[miniov2.WebhookMinIOBucket] = corev1.EnvVar{
-			Name: miniov2.WebhookMinIOBucket,
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: miniov2.WebhookSecret,
-					},
-					Key: miniov2.WebhookMinIOArgs,
-				},
-			},
+		sidecarBucketURL := fmt.Sprintf("http://127.0.0.1:%s%s/%s/%s",
+			common.WebhookDefaultPort,
+			common.WebhookAPIBucketService,
+			t.Namespace,
+			t.Name)
+		envVarsMap[bucketDNSEnv] = corev1.EnvVar{
+			Name:  bucketDNSEnv,
+			Value: sidecarBucketURL,
 		}
 	}
 	// Check if any domains are configured
@@ -191,10 +162,6 @@ func minioEnvironmentVars(t *miniov2.Tenant, skipEnvVars map[string][]byte, opVe
 		}
 	}
 
-	// add console environment variables
-	for _, env := range consoleEnvVars(t) {
-		envVarsMap[env.Name] = env
-	}
 	// Add all the tenant.spec.env environment variables
 	// User defined environment variables will take precedence over default environment variables
 	for _, env := range t.GetEnvVars() {
@@ -281,7 +248,7 @@ var TmpCfgVolumeMount = corev1.VolumeMount{
 }
 
 // Builds the volume mounts for MinIO container.
-func volumeMounts(t *miniov2.Tenant, pool *miniov2.Pool, operatorTLS bool, certVolumeSources []v1.VolumeProjection) (mounts []v1.VolumeMount) {
+func volumeMounts(t *miniov2.Tenant, pool *miniov2.Pool, certVolumeSources []v1.VolumeProjection) (mounts []v1.VolumeMount) {
 	// Default volume name, unless another one was provided
 	name := miniov2.MinIOVolumeName
 	if pool.VolumeClaimTemplate != nil {
@@ -307,7 +274,7 @@ func volumeMounts(t *miniov2.Tenant, pool *miniov2.Pool, operatorTLS bool, certV
 
 	// CertPath (/tmp/certs) will always be mounted even if the tenant doesn't have any TLS certificate
 	// operator will still mount the operator public cert under /tmp/certs/CAs/operator.crt
-	if operatorTLS || len(certVolumeSources) > 0 {
+	if len(certVolumeSources) > 0 {
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      t.MinIOTLSSecretName(),
 			MountPath: miniov2.MinIOCertPath,
@@ -318,7 +285,7 @@ func volumeMounts(t *miniov2.Tenant, pool *miniov2.Pool, operatorTLS bool, certV
 }
 
 // Builds the MinIO container for a Tenant.
-func poolMinioServerContainer(t *miniov2.Tenant, wsSecret *v1.Secret, skipEnvVars map[string][]byte, pool *miniov2.Pool, hostsTemplate string, opVersion string, operatorTLS bool, certVolumeSources []v1.VolumeProjection) v1.Container {
+func poolMinioServerContainer(t *miniov2.Tenant, skipEnvVars map[string][]byte, pool *miniov2.Pool, hostsTemplate string, opVersion string, certVolumeSources []v1.VolumeProjection) v1.Container {
 	consolePort := miniov2.ConsolePort
 	if t.TLS() {
 		consolePort = miniov2.ConsoleTLSPort
@@ -351,7 +318,7 @@ func poolMinioServerContainer(t *miniov2.Tenant, wsSecret *v1.Secret, skipEnvVar
 			},
 		},
 		ImagePullPolicy: t.Spec.ImagePullPolicy,
-		VolumeMounts:    volumeMounts(t, pool, operatorTLS, certVolumeSources),
+		VolumeMounts:    volumeMounts(t, pool, certVolumeSources),
 		Args:            args,
 		Env:             minioEnvironmentVars(t, skipEnvVars, opVersion),
 		Resources:       pool.Resources,
@@ -420,28 +387,41 @@ func poolSecurityContext(pool *miniov2.Pool, status *miniov2.PoolStatus) *v1.Pod
 
 // Builds the security context for containers in a Pool
 func poolContainerSecurityContext(pool *miniov2.Pool) *v1.SecurityContext {
+	// Default values:
+	// By default, values should be totally empty if not provided
+	// This is specially needed in OpenShift where Security Context Constraints restrict them
+	// if let empty then OCP can pick the values from the constraints defined.
+	containerSecurityContext := corev1.SecurityContext{}
 	runAsNonRoot := true
 	var runAsUser int64 = 1000
 	var runAsGroup int64 = 1000
-	// Default to Pod values
+	poolSCSet := false
+
+	// Values from pool.SecurityContext ONLY if provided
 	if pool.SecurityContext != nil {
 		if pool.SecurityContext.RunAsNonRoot != nil {
 			runAsNonRoot = *pool.SecurityContext.RunAsNonRoot
+			poolSCSet = true
 		}
 		if pool.SecurityContext.RunAsUser != nil {
 			runAsUser = *pool.SecurityContext.RunAsUser
+			poolSCSet = true
 		}
 		if pool.SecurityContext.RunAsGroup != nil {
 			runAsGroup = *pool.SecurityContext.RunAsGroup
+			poolSCSet = true
+		}
+		if poolSCSet {
+			// Only set values if one of above is set otherwise let it empty
+			containerSecurityContext = corev1.SecurityContext{
+				RunAsNonRoot: &runAsNonRoot,
+				RunAsUser:    &runAsUser,
+				RunAsGroup:   &runAsGroup,
+			}
 		}
 	}
 
-	containerSecurityContext := corev1.SecurityContext{
-		RunAsNonRoot: &runAsNonRoot,
-		RunAsUser:    &runAsUser,
-		RunAsGroup:   &runAsGroup,
-	}
-
+	// Values from pool.ContainerSecurityContext if provided
 	if pool != nil && pool.ContainerSecurityContext != nil {
 		containerSecurityContext = *pool.ContainerSecurityContext
 	}
@@ -454,14 +434,12 @@ const CfgVol = "cfg-vol"
 // NewPoolArgs arguments used to create a new pool
 type NewPoolArgs struct {
 	Tenant          *miniov2.Tenant
-	WsSecret        *v1.Secret
 	SkipEnvVars     map[string][]byte
 	Pool            *miniov2.Pool
 	PoolStatus      *miniov2.PoolStatus
 	ServiceName     string
 	HostsTemplate   string
 	OperatorVersion string
-	OperatorTLS     bool
 	OperatorCATLS   bool
 	OperatorImage   string
 }
@@ -469,14 +447,12 @@ type NewPoolArgs struct {
 // NewPool creates a new StatefulSet for the given Cluster.
 func NewPool(args *NewPoolArgs) *appsv1.StatefulSet {
 	t := args.Tenant
-	wsSecret := args.WsSecret
 	skipEnvVars := args.SkipEnvVars
 	pool := args.Pool
 	poolStatus := args.PoolStatus
 	serviceName := args.ServiceName
 	hostsTemplate := args.HostsTemplate
 	operatorVersion := args.OperatorVersion
-	operatorTLS := args.OperatorTLS
 	operatorCATLS := args.OperatorCATLS
 	operatorImage := args.OperatorImage
 
@@ -674,22 +650,6 @@ func NewPool(args *NewPoolArgs) *appsv1.StatefulSet {
 		})
 	}
 
-	if operatorTLS {
-		// Mount Operator TLS certificate to MinIO ~/cert/CAs
-		operatorTLSSecretName := "operator-tls"
-		certVolumeSources = append(certVolumeSources, []corev1.VolumeProjection{
-			{
-				Secret: &corev1.SecretProjection{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: operatorTLSSecretName,
-					},
-					Items: []corev1.KeyToPath{
-						{Key: "public.crt", Path: "CAs/operator.crt"},
-					},
-				},
-			},
-		}...)
-	}
 	if operatorCATLS {
 		// Mount Operator CA TLS certificate to MinIO ~/cert/CAs
 		operatorCATLSSecretName := "operator-ca-tls"
@@ -825,7 +785,7 @@ func NewPool(args *NewPoolArgs) *appsv1.StatefulSet {
 	}
 
 	containers := []corev1.Container{
-		poolMinioServerContainer(t, wsSecret, skipEnvVars, pool, hostsTemplate, operatorVersion, operatorTLS, certVolumeSources),
+		poolMinioServerContainer(t, skipEnvVars, pool, hostsTemplate, operatorVersion, certVolumeSources),
 		getSideCarContainer(t, operatorImage),
 	}
 

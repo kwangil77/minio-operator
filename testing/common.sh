@@ -58,17 +58,20 @@ function install_operator() {
 
   # To compile current branch
   echo "Compiling Current Branch Operator"
-  (cd "${SCRIPT_DIR}/.." && TAG=minio/operator:noop make docker) # will not change your shell's current directory
+  TAG=minio/operator:noop
+  (cd "${SCRIPT_DIR}/.." && try docker build -t $TAG .) # will not change your shell's current directory
 
   echo 'start - load compiled image so we can use it later on'
-  kind load docker-image minio/operator:noop
+  try kind load docker-image minio/operator:noop
   echo 'end - load compiled image so we can use it later on'
 
   if [ "$1" = "helm" ]; then
 
     echo "Change the version accordingly for image to be found within the cluster"
+    yq -i '.operator.image.repository = "minio/operator"' "${SCRIPT_DIR}/../helm/operator/values.yaml"
     yq -i '.operator.image.tag = "noop"' "${SCRIPT_DIR}/../helm/operator/values.yaml"
-
+    yq -i '.console.image.repository = "minio/operator"' "${SCRIPT_DIR}/../helm/operator/values.yaml"
+    yq -i '.console.image.tag = "noop"' "${SCRIPT_DIR}/../helm/operator/values.yaml"
     echo "Installing Current Operator via HELM"
     helm install \
       --namespace minio-operator \
@@ -78,6 +81,12 @@ function install_operator() {
     echo "key, value for pod selector in helm test"
     key=app.kubernetes.io/name
     value=operator
+  elif [ "$1" = "sts" ]; then
+    echo "Installing Current Operator with sts enabled"
+    try kubectl apply -k "${SCRIPT_DIR}/../testing/sts/operator"
+    echo "key, value for pod selector in kustomize test"
+    key=name
+    value=minio-operator
   else
     echo "Installing Current Operator"
     # Created an overlay to use that image version from dev folder
@@ -87,9 +96,6 @@ function install_operator() {
     key=name
     value=minio-operator
   fi
-
-  echo "Scaling down MinIO Operator Deployment"
-  try kubectl -n minio-operator scale deployment minio-operator --replicas=1
 
   # Reusing the wait for both, Kustomize and Helm
   echo "Waiting for k8s api"
@@ -127,9 +133,6 @@ function install_operator_version() {
 
   # Initialize the MinIO Kubernetes Operator
   kubectl minio init
-
-  echo "Scaling down MinIO Operator Deployment"
-  try kubectl -n minio-operator scale deployment minio-operator --replicas=1
 
   # Verify installation of the plugin
   echo "Installed operator release: $(kubectl minio version)"
@@ -200,24 +203,65 @@ function wait_for_resource() {
   done
 }
 
+function wait_for_resource_field_selector() {
+  # example 1 job:
+  # namespace="minio-tenant-1"
+  # codition="condition=Complete"
+  # selector="metadata.name=setup-bucket"
+  # wait_for_resource_field_selector $namespace job $condition $selector
+  #
+  # example 2 tenant:
+  # wait_for_resource_field_selector $namespace job $condition $selector
+  # condition=jsonpath='{.status.currentState}'=Initialized
+  # selector="metadata.name=storage-policy-binding"
+  # wait_for_resource_field_selector $namespace tenant $condition $selector 900s
+
+  namespace=$1
+  resourcetype=$2
+  condition=$3
+  fieldselector=$4
+  if [ $# -ge 5 ]; then
+    timeout="$5"
+  else
+    timeout="600s"
+  fi
+
+  echo "Waiting for $resourcetype \"$fieldselector\" for \"$condition\" ($timeout timeout)"
+  kubectl wait -n "$namespace" "$resourcetype" \
+    --for=$condition \
+    --field-selector $fieldselector \
+    --timeout="$timeout"
+}
+
 function check_tenant_status() {
   # Check MinIO is accessible
+  # $1 namespace
+  # $2 tenant name
+  # $3 metadata.app field value (optional)
+  # $4 "helm", means it's testing helm tenant (optional)
+
   key=v1.min.io/tenant
+  value=$2
   if [ $# -ge 3 ]; then
     echo "Third argument provided, then set key value"
-    key=$3
+    key=app
+    value=$3
   else
     echo "No third argument provided, using default key"
   fi
 
-  wait_for_resource $1 $2 $key
+  wait_for_resource $1 $value $key
 
-  echo "Waiting for pods to be ready. (5m timeout)"
+  echo "Waiting for tenant to be Initialized"
+
+  condition=jsonpath='{.status.currentState}'=Initialized
+  selector="metadata.name=$2"
+  try wait_for_resource_field_selector "$1" tenant $condition "$selector" 600s
 
   if [ $# -ge 4 ]; then
     echo "Fourth argument provided, then get secrets from helm"
-    USER=$(kubectl get secret minio1-secret -o jsonpath="{.data.accesskey}" | base64 --decode)
-    PASSWORD=$(kubectl get secret minio1-secret -o jsonpath="{.data.secretkey}" | base64 --decode)
+    USER=$(kubectl get secret myminio-secret -o jsonpath="{.data.accesskey}" | base64 --decode)
+    PASSWORD=$(kubectl get secret myminio-secret -o jsonpath="{.data.secretkey}" | base64 --decode)
   else
     echo "No fourth argument provided, using default USER and PASSWORD"
     TENANT_CONFIG_SECRET=$(kubectl -n $1 get tenants.minio.min.io $2 -o jsonpath="{.spec.configuration.name}")
@@ -225,14 +269,9 @@ function check_tenant_status() {
     PASSWORD=$(kubectl -n $1 get secrets "$TENANT_CONFIG_SECRET" -o go-template='{{index .data "config.env"|base64decode }}' | grep 'export MINIO_ROOT_PASSWORD="' | sed -e 's/export MINIO_ROOT_PASSWORD="//g' | sed -e 's/"//g')
   fi
 
-  try kubectl wait --namespace $1 \
-    --for=condition=ready pod \
-    --selector=$key=$2 \
-    --timeout=300s
-
   if [ $# -ge 4 ]; then
     # make sure no rollout is happening
-    try kubectl -n $1 rollout status sts/minio1-pool-0
+    try kubectl -n $1 rollout status sts/myminio-pool-0
   else
     # make sure no rollout is happening
     try kubectl -n $1 rollout status sts/$2-pool-0
@@ -257,7 +296,7 @@ function check_tenant_status() {
 
 # Install tenant function is being used by deploy-tenant and check-prometheus
 function install_tenant() {
-  # Check if we are going to install helm, lastest in this branch or a particular version
+  # Check if we are going to install helm, latest in this branch or a particular version
   if [ "$1" = "helm" ]; then
     echo "Installing tenant from Helm"
     echo "This test is intended for helm only not for KES, there is another kes test, so let's remove KES here"
@@ -266,35 +305,42 @@ function install_tenant() {
     try helm lint "${SCRIPT_DIR}/../helm/tenant" --quiet
 
     namespace=default
-    key=app
-    value=minio
+    key=v1.min.io/tenant
+    value=myminio
     try helm install --namespace $namespace \
       --create-namespace tenant ./helm/tenant
   elif [ "$1" = "logs" ]; then
     namespace="tenant-lite"
     key=v1.min.io/tenant
-    value=storage-lite
+    value=myminio
     echo "Installing lite tenant from current branch"
 
     try kubectl apply -k "${SCRIPT_DIR}/../testing/tenant-logs"
   elif [ "$1" = "prometheus" ]; then
     namespace="tenant-lite"
     key=v1.min.io/tenant
-    value=storage-lite
+    value=myminio
     echo "Installing lite tenant from current branch"
 
     try kubectl apply -k "${SCRIPT_DIR}/../testing/tenant-prometheus"
+  elif [ "$1" = "policy-binding" ]; then
+    namespace="minio-tenant-1"
+    key=v1.min.io/tenant
+    value=myminio
+    echo "Installing policyBinding tenant from current branch"
+
+    try kubectl apply -k "${SCRIPT_DIR}/../examples/kustomization/sts-example/tenant"
   elif [ -e $1 ]; then
     namespace="tenant-lite"
     key=v1.min.io/tenant
-    value=storage-lite
+    value=myminio
     echo "Installing lite tenant from current branch"
 
     try kubectl apply -k "${SCRIPT_DIR}/../testing/tenant"
   else
     namespace="tenant-lite"
     key=v1.min.io/tenant
-    value=storage-lite
+    value=myminio
     echo "Installing lite tenant for version $1"
 
     try kubectl apply -k "github.com/minio/operator/testing/tenant\?ref\=$1"
@@ -314,6 +360,52 @@ function install_tenant() {
 
   echo "Build passes basic tenant creation"
 
+}
+
+function setup_sts_bucket() {
+  echo "Installing setub bucket job"
+  try kubectl apply -k "${SCRIPT_DIR}/../examples/kustomization/sts-example/sample-data"
+  namespace="minio-tenant-1"
+  condition="condition=Complete"
+  selector="metadata.name=setup-bucket"
+  try wait_for_resource_field_selector $namespace job $condition $selector
+  echo "Installing setub bucket job: DONE"
+}
+
+function install_sts_client() {
+  echo "Installing sts client job for $1"
+  # Definition of the sdk and client to test
+
+  OLDIFS=$IFS
+  IFS="-"; declare -a CLIENTARR=($1)
+  sdk="${CLIENTARR[0]}-${CLIENTARR[1]}"
+  lang="${CLIENTARR[2]}"
+  makefiletarget="${CLIENTARR[0]}${CLIENTARR[1]}$lang"
+  IFS=$OLDIFS
+
+  # Build and load client images
+  echo "Building docker image for miniodev/operator-sts-example:$1"
+  (cd "${SCRIPT_DIR}/../examples/kustomization/sts-example/sample-clients" && try make "${makefiletarget}")
+  try kind load docker-image "miniodev/operator-sts-example:$1"
+
+  client_namespace="sts-client"
+  tenant_namespace="minio-tenant-1"
+
+  if [ $# -ge 2 ]; then
+    if [ "$2" = "cm" ]; then
+      echo "Setting up certmanager CA secret"
+      # When certmanager issues the certificates, we copy the certificate to a secret in the client namespace
+      try kubectl get secrets -n $tenant_namespace tenant-certmanager-tls -o=jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
+      try kubectl create secret generic tenant-certmanager-tls --from-file=ca.crt -n $client_namespace
+    fi
+  fi
+
+  echo "creating client $1"
+  try kubectl apply -k "${SCRIPT_DIR}/../examples/kustomization/sts-example/sample-clients/$sdk/$lang"
+  condition="condition=Complete"
+  selector="metadata.name=sts-client-example-$sdk-$lang-job"
+  try wait_for_resource_field_selector $client_namespace job $condition $selector 600s
+  echo "Installing sts client job for $1: DONE"
 }
 
 # Port forward

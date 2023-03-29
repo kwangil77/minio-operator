@@ -13,10 +13,26 @@ metadata:
 spec:
   type: ClusterIP
   ports:
-    - port: 4222
-      name: https
     - port: 4221
       name: http
   selector:
     name: minio-operator
     operator: leader
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sts # Please do not change this value
+  labels:
+    name: minio-operator
+  namespace: minio-operator
+  annotations:
+    service.alpha.openshift.io/serving-cert-secret-name: operator-tls # To solve "remote error: tls: bad certificate"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 4223
+      targetPort: 4223
+      name: https
+  selector:
+    name: minio-operator
