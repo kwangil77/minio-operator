@@ -6,7 +6,7 @@ metadata:
   labels:
     {{- include "minio-operator.labels" . | nindent 4 }}
 spec:
-  type: {{ .Values.console.service.type }}
+  type: {{ .Values.operator.service.type }}
   ports:
     - port: 4221
       name: http
@@ -22,7 +22,7 @@ metadata:
   labels:
     {{- include "minio-operator.labels" . | nindent 4 }}
 spec:
-  type: ClusterIP
+  type: {{ .Values.operator.service.type }}
   ports:
     - port: 4223
       name: https
