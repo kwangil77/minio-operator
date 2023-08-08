@@ -103,6 +103,10 @@ clean-swagger:
 	@rm -rf models
 	@rm -rf api/operations
 
+install-go-swagger:
+	@echo "installing latest go-swagger"
+	@go install github.com/go-swagger/go-swagger/cmd/swagger@latest
+
 swagger-operator:
 	@echo "Generating swagger server code from yaml"
 	@swagger generate server -A operator --main-package=operator --server-package=api --exclude-main -P models.Principal -f ./swagger.yml -r NOTICE
@@ -110,7 +114,7 @@ swagger-operator:
 	@npx swagger-typescript-api -p ./swagger.yml -o ./web-app/src/api -n operatorApi.ts
 	@(cd web-app && npm install -g prettier && prettier -w .)
 
-swagger-gen: clean-swagger swagger-operator apply-gofmt
+swagger-gen: install-go-swagger clean-swagger swagger-operator apply-gofmt
 	@echo "Done Generating swagger server code from yaml"
 
 assets:
@@ -128,3 +132,47 @@ test-operator-integration:
 
 test-operator:
 	@(env bash $(PWD)/web-app/tests/scripts/operator.sh)
+
+models-gen-mac:
+	@swagger generate client -f ./swagger.yml -m ./models
+	@ls ./models | xargs -I {} gsed -i "2 a\
+// This file is part of MinIO Operator\n\
+// Copyright (c) 2023 MinIO, Inc.\n\
+//\n\
+// This program is free software: you can redistribute it and/or modify\n\
+// it under the terms of the GNU Affero General Public License as published by\n\
+// the Free Software Foundation, either version 3 of the License, or\n\
+// (at your option) any later version.\n\
+//\n\
+// This program is distributed in the hope that it will be useful,\n\
+// but WITHOUT ANY WARRANTY; without even the implied warranty of\n\
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n\
+// GNU Affero General Public License for more details.\n\
+//\n\
+// You should have received a copy of the GNU Affero General Public License\n\
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.\n\
+//\n\
+" ./models/{}
+	@rm -rf client
+
+models-gen:
+	@swagger generate client -f ./swagger.yml -m ./models
+	@ls ./models | xargs -I {} sed -i "2 a\
+// This file is part of MinIO Operator\n\
+// Copyright (c) 2023 MinIO, Inc.\n\
+//\n\
+// This program is free software: you can redistribute it and/or modify\n\
+// it under the terms of the GNU Affero General Public License as published by\n\
+// the Free Software Foundation, either version 3 of the License, or\n\
+// (at your option) any later version.\n\
+//\n\
+// This program is distributed in the hope that it will be useful,\n\
+// but WITHOUT ANY WARRANTY; without even the implied warranty of\n\
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n\
+// GNU Affero General Public License for more details.\n\
+//\n\
+// You should have received a copy of the GNU Affero General Public License\n\
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.\n\
+//\n\
+" ./models/{}
+	@rm -rf client

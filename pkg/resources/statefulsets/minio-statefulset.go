@@ -16,10 +16,12 @@ package statefulsets
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/minio/operator/pkg/certs"
 	"github.com/minio/operator/pkg/common"
 
 	miniov2 "github.com/minio/operator/pkg/apis/minio.min.io/v2"
@@ -28,7 +30,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 const (
@@ -292,7 +293,32 @@ func poolMinioServerContainer(t *miniov2.Tenant, skipEnvVars map[string][]byte, 
 	if t.TLS() {
 		consolePort = miniov2.ConsoleTLSPort
 	}
-	args := []string{"server", "--certs-dir", miniov2.MinIOCertPath, "--console-address", ":" + strconv.Itoa(consolePort)}
+	args := []string{
+		"server",
+		"--certs-dir", miniov2.MinIOCertPath,
+		"--console-address", ":" + strconv.Itoa(consolePort),
+	}
+
+	containerPorts := []corev1.ContainerPort{
+		{
+			ContainerPort: miniov2.MinIOPort,
+		},
+		{
+			ContainerPort: int32(consolePort),
+		},
+	}
+
+	if t.Spec.Features != nil && t.Spec.Features.EnableSFTP != nil && *t.Spec.Features.EnableSFTP {
+		pkFile := filepath.Join(miniov2.MinIOCertPath, certs.PrivateKeyFile)
+		args = append(args, []string{
+			"--sftp", fmt.Sprintf("address=:%d", miniov2.MinIOSFTPPort),
+			"--sftp", "ssh-private-key=" + pkFile,
+		}...)
+		containerPorts = append(containerPorts, v1.ContainerPort{
+			ContainerPort: miniov2.MinIOSFTPPort,
+		})
+	}
+
 	if t.Spec.Logging != nil {
 		// If logging is specified, expect users to
 		// provide the right set of settings to toggle
@@ -309,16 +335,9 @@ func poolMinioServerContainer(t *miniov2.Tenant, skipEnvVars map[string][]byte, 
 	}
 
 	return corev1.Container{
-		Name:  miniov2.MinIOServerName,
-		Image: t.Spec.Image,
-		Ports: []corev1.ContainerPort{
-			{
-				ContainerPort: miniov2.MinIOPort,
-			},
-			{
-				ContainerPort: int32(consolePort),
-			},
-		},
+		Name:            miniov2.MinIOServerName,
+		Image:           t.Spec.Image,
+		Ports:           containerPorts,
 		ImagePullPolicy: t.Spec.ImagePullPolicy,
 		VolumeMounts:    volumeMounts(t, pool, certVolumeSources),
 		Args:            args,
@@ -797,29 +816,11 @@ func NewPool(args *NewPoolArgs) *appsv1.StatefulSet {
 		podVolumes = append(podVolumes, t.Spec.SideCars.Volumes...)
 	}
 
-	moreServers := pool.Servers > 4
-	unavailable := intstr.FromInt(1)
-	if moreServers {
-		// if we have more servers than 4 nodes in a statefulset,
-		// we can allow rolling update strategy to roll two pods
-		// at a time instead of just '1' (default), MinIO servers
-		// beyond 4 servers are capable of tolerating a minimum
-		// of 2 replicas being down - this allows for faster
-		// rolling update strategy for all our deployments.
-		unavailable = intstr.FromInt(2)
-	}
-
 	initContainer := getInitContainer(t, operatorImage, pool)
 
 	ss := &appsv1.StatefulSet{
 		ObjectMeta: ssMeta,
 		Spec: appsv1.StatefulSetSpec{
-			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
-				Type: miniov2.DefaultUpdateStrategy,
-				RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{
-					MaxUnavailable: &unavailable,
-				},
-			},
 			PodManagementPolicy: t.Spec.PodManagementPolicy,
 			Selector:            ContainerMatchLabels(t, pool),
 			ServiceName:         serviceName,
