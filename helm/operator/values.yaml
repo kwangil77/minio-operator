@@ -62,6 +62,8 @@ operator:
       cpu: 200m
       memory: 256Mi
       ephemeral-storage: 500Mi
+  service:
+    type: ClusterIP
 
 console:
   image:
@@ -87,6 +89,8 @@ console:
   containerSecurityContext:
     runAsUser: 1000
     runAsNonRoot: true
+  service:
+    type: ClusterIP
   ingress:
     enabled: false
     ingressClassName: ""
