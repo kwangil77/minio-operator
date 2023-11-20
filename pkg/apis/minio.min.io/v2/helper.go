@@ -49,7 +49,6 @@ import (
 	"github.com/minio/madmin-go/v2"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
-	"github.com/minio/minio-go/v7/pkg/s3utils"
 )
 
 // Webhook API constants
@@ -762,15 +761,13 @@ func (t *Tenant) CreateUsers(madmClnt *madmin.AdminClient, userCredentialSecrets
 }
 
 // CreateBuckets creates buckets and skips if bucket already present
-func (t *Tenant) CreateBuckets(minioClient *minio.Client, buckets ...Bucket) error {
+func (t *Tenant) CreateBuckets(minioClient *minio.Client, buckets ...Bucket) (created bool, err error) {
+	createBucketCount := 0
 	for _, bucket := range buckets {
-		if err := s3utils.CheckValidBucketNameStrict(bucket.Name); err != nil {
-			return err
-		}
 		// create each bucket with a 20 seconds timeout
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second*20)
 		defer cancel()
-		if err := minioClient.MakeBucket(ctx, bucket.Name, minio.MakeBucketOptions{
+		if err = minioClient.MakeBucket(ctx, bucket.Name, minio.MakeBucketOptions{
 			Region:        bucket.Region,
 			ObjectLocking: bucket.ObjectLocking,
 		}); err != nil {
@@ -779,12 +776,13 @@ func (t *Tenant) CreateBuckets(minioClient *minio.Client, buckets ...Bucket) err
 				klog.Infof(err.Error())
 				continue
 			default:
-				return err
+				return false, err
 			}
 		}
+		createBucketCount++
 		klog.Infof("Successfully created bucket %s", bucket.Name)
 	}
-	return nil
+	return createBucketCount > 0, nil
 }
 
 // Validate validate single pool as per MinIO deployment requirements
@@ -907,6 +905,12 @@ func GetClusterDomain() string {
 
 // MergeMaps merges two maps and returns the union
 func MergeMaps(a, b map[string]string) map[string]string {
+	if a == nil {
+		a = map[string]string{}
+	}
+	if b == nil {
+		b = map[string]string{}
+	}
 	for k, v := range b {
 		a[k] = v
 	}
@@ -1021,20 +1025,20 @@ func parsEnvEntry(envEntry string) (envKV, error) {
 			Skip: true,
 		}, nil
 	}
-	const envSeparator = "="
-	envTokens := strings.SplitN(strings.TrimSpace(strings.TrimPrefix(envEntry, "export")), envSeparator, 2)
-	if len(envTokens) != 2 {
-		return envKV{}, fmt.Errorf("envEntry malformed; %s, expected to be of form 'KEY=value'", envEntry)
-	}
-	key := envTokens[0]
-	val := envTokens[1]
-
-	if strings.HasPrefix(key, "#") {
+	if strings.HasPrefix(envEntry, "#") {
 		// Skip commented lines
 		return envKV{
 			Skip: true,
 		}, nil
 	}
+	const envSeparator = "="
+	envTokens := strings.SplitN(strings.TrimSpace(strings.TrimPrefix(envEntry, "export")), envSeparator, 2)
+	if len(envTokens) != 2 {
+		return envKV{}, fmt.Errorf("envEntry malformed; %s, expected to be of form 'KEY=value'", envEntry)
+	}
+
+	key := envTokens[0]
+	val := envTokens[1]
 
 	// Remove quotes from the value if found
 	if len(val) >= 2 {
@@ -1043,6 +1047,7 @@ func parsEnvEntry(envEntry string) (envKV, error) {
 			val = val[1 : len(val)-1]
 		}
 	}
+
 	return envKV{
 		Key:   key,
 		Value: val,

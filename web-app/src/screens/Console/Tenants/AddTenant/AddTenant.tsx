@@ -27,11 +27,6 @@ import {
   settingsCommon,
   wizardCommon,
 } from "../../Common/FormComponents/common/styleLibrary";
-import GenericWizard from "../../Common/GenericWizard/GenericWizard";
-import {
-  IWizardButton,
-  IWizardElement,
-} from "../../Common/GenericWizard/types";
 import { AppState, useAppDispatch } from "../../../../store";
 import Configure from "./Steps/Configure";
 import IdentityProvider from "./Steps/IdentityProvider";
@@ -39,14 +34,21 @@ import Security from "./Steps/Security";
 import Encryption from "./Steps/Encryption";
 import Affinity from "./Steps/Affinity";
 import Images from "./Steps/Images";
-import PageLayout from "../../Common/Layout/PageLayout";
 
 import TenantResources from "./Steps/TenantResources/TenantResources";
 import {
   IMkEnvs,
   resourcesConfigurations,
 } from "./Steps/TenantResources/utils";
-import { BackLink, HelpBox, StorageIcon } from "mds";
+import {
+  BackLink,
+  HelpBox,
+  StorageIcon,
+  PageLayout,
+  Wizard,
+  WizardElement,
+  WizardButton,
+} from "mds";
 import { selFeatures } from "../../consoleSlice";
 import makeStyles from "@mui/styles/makeStyles";
 import { resetAddTenantForm } from "./createTenantSlice";
@@ -101,7 +103,7 @@ const AddTenant = () => {
 
   const cancelButton = {
     label: "Cancel",
-    type: "other",
+    type: "custom" as "to" | "custom" | "next" | "back",
     enabled: true,
     action: () => {
       dispatch(resetAddTenantForm());
@@ -109,11 +111,11 @@ const AddTenant = () => {
     },
   };
 
-  const createButton: IWizardButton = {
+  const createButton: WizardButton = {
     componentRender: <CreateTenantButton key={"create-tenant"} />,
   };
 
-  const wizardSteps: IWizardElement[] = [
+  const wizardSteps: WizardElement[] = [
     {
       label: "Setup",
       componentRender: <TenantResources />,
@@ -181,7 +183,7 @@ const AddTenant = () => {
           </Grid>
         )}
         <Grid item xs={12} className={classes.pageBox}>
-          <GenericWizard wizardSteps={filteredWizardSteps} />
+          <Wizard wizardSteps={filteredWizardSteps} linearMode={false} />
         </Grid>
         {formRender === IMkEnvs.aws && (
           <Grid item xs={12} style={{ marginTop: 16 }}>

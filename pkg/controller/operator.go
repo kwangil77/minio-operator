@@ -60,7 +60,9 @@ const (
 	// DefaultDeploymentName is the default name of the operator deployment
 	DefaultDeploymentName = "minio-operator"
 	// DefaultOperatorImage is the version fo the operator being used
-	DefaultOperatorImage = "minio/operator:v5.0.10"
+	DefaultOperatorImage = "minio/operator:v5.0.11"
+	// DefaultOperatorImageEnv is the default image to minio instance
+	DefaultOperatorImageEnv = "MINIO_OPERATOR_IMAGE"
 )
 
 var serverCertsManager *xcerts.Manager
@@ -314,38 +316,32 @@ func (c *Controller) createUsers(ctx context.Context, tenant *miniov2.Tenant, te
 	return err
 }
 
-func (c *Controller) createBuckets(ctx context.Context, tenant *miniov2.Tenant, tenantConfiguration map[string][]byte) (err error) {
-	defer func() {
-		if err == nil {
-			if _, err = c.updateProvisionedBucketStatus(ctx, tenant, true); err != nil {
-				klog.V(2).Infof(err.Error())
-			}
-		}
-	}()
-
+func (c *Controller) createBuckets(ctx context.Context, tenant *miniov2.Tenant, tenantConfiguration map[string][]byte) (created bool, err error) {
 	tenantBuckets := tenant.Spec.Buckets
 	if len(tenantBuckets) == 0 {
-		return nil
+		return false, nil
 	}
-
-	if _, err := c.updateTenantStatus(ctx, tenant, StatusProvisioningDefaultBuckets, 0); err != nil {
-		return err
-	}
-
 	// get a new admin client
 	minioClient, err := tenant.NewMinIOUser(tenantConfiguration, c.getTransport())
 	if err != nil {
 		// show the error and continue
 		klog.Errorf("Error instantiating minio Client: %v ", err)
-		return err
+		return false, err
 	}
-
-	if err := tenant.CreateBuckets(minioClient, tenantBuckets...); err != nil {
+	created, err = tenant.CreateBuckets(minioClient, tenantBuckets...)
+	if err != nil {
 		klog.V(2).Infof("Unable to create MinIO buckets: %v", err)
-		return err
+		if _, terr := c.updateTenantStatus(ctx, tenant, StatusProvisioningDefaultBuckets, 0); terr != nil {
+			return false, err
+		}
+		return false, err
 	}
-
-	return nil
+	if created {
+		if _, err = c.updateProvisionedBucketStatus(ctx, tenant, true); err != nil {
+			klog.V(2).Infof(err.Error())
+		}
+	}
+	return created, err
 }
 
 // getOperatorDeploymentName Internal func returns the Operator deployment name from MINIO_OPERATOR_DEPLOYMENT_NAME ENV variable or the default name

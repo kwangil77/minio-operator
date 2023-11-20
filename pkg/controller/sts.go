@@ -314,7 +314,7 @@ func GetPolicy(ctx context.Context, adminClient *madmin.AdminClient, policyName 
 }
 
 // AssumeRole invokes the AssumeRole method in the Minio Tenant
-func AssumeRole(ctx context.Context, c *Controller, tenant *miniov2.Tenant, sessionPolicy string, duration int) (*credentials.Value, error) {
+func AssumeRole(ctx context.Context, c *Controller, tenant *miniov2.Tenant, region string, sessionPolicy string, duration int) (*credentials.Value, error) {
 	client, accessKey, secretKey, err := getTenantClient(ctx, c, tenant)
 	if err != nil {
 		return nil, err
@@ -330,6 +330,7 @@ func AssumeRole(ctx context.Context, c *Controller, tenant *miniov2.Tenant, sess
 		SecretKey:       secretKey,
 		Policy:          sessionPolicy,
 		DurationSeconds: duration,
+		Location:        region,
 	}
 
 	stsAssumeRole := &credentials.STSAssumeRole{
@@ -387,11 +388,13 @@ func (c *Controller) ValidateServiceAccountJWT(ctx *context.Context, token strin
 	return tokenReviewResult, nil
 }
 
-// IsSTSEnabled Validates if the STS API is turned on, STS is disabled by default
-// **WARNING** This will change and will be default to "on" in operator v5
+// IsSTSEnabled Validates if the STS API is turned on, STS is enabled by default
 func IsSTSEnabled() bool {
 	value, set := os.LookupEnv(STSEnabled)
-	return (set && value == "on")
+	if set {
+		return value == "on"
+	}
+	return true
 }
 
 // generateConsoleTLSCert Issues the Operator Console TLS Certificate

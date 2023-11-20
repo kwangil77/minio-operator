@@ -23,7 +23,7 @@ spec:
       serviceAccountName: minio-operator
       containers:
         - name: minio-operator
-          image: minio/operator:v5.0.10
+          image: minio/operator:v5.0.11
           imagePullPolicy: IfNotPresent
           args:
             - controller
@@ -40,7 +40,7 @@ spec:
             - name: MINIO_CONSOLE_TLS_ENABLE
               value: "off"
             - name: OPERATOR_STS_ENABLED
-              value: "off"
+              value: "on"
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:

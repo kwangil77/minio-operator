@@ -34,6 +34,7 @@ import (
 
 	"github.com/minio/minio-go/v7/pkg/set"
 	"github.com/minio/operator/pkg/controller/certificates"
+	"github.com/minio/pkg/env"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/klog/v2"
 
@@ -244,6 +245,8 @@ func NewController(podName string, namespacesToWatch set.StringSet, kubeClientSe
 			}
 		}
 	}
+
+	oprImg = env.Get(DefaultOperatorImageEnv, oprImg)
 
 	controller := &Controller{
 		podName:                   podName,
@@ -589,19 +592,22 @@ func (c *Controller) Start(threadiness int, stopCh <-chan struct{}) error {
 			Err:  nil,
 		}
 	}()
-
-	for oerr := range notificationChannel {
-		switch oerr.Type {
-		case STSServerNotification:
-			if !errors.Is(oerr.Err, http.ErrServerClosed) {
-				klog.Errorf("STS API Server stopped: %v, going to restart", oerr.Err)
-				go c.startSTSAPIServer(ctx, notificationChannel)
+	for {
+		select {
+		case oerr := <-notificationChannel:
+			switch oerr.Type {
+			case STSServerNotification:
+				if !errors.Is(oerr.Err, http.ErrServerClosed) {
+					klog.Errorf("STS API Server stopped: %v, going to restart", oerr.Err)
+					go c.startSTSAPIServer(ctx, notificationChannel)
+				}
+			case LeaderElection:
+				return nil
 			}
-		case LeaderElection:
+		case <-stopCh:
 			return nil
 		}
 	}
-	return nil
 }
 
 // Stop is called to shutdown the controller
@@ -751,6 +757,26 @@ func (c *Controller) syncHandler(key string) (Result, error) {
 			if err != nil {
 				// Just output the error. Will not retry.
 				runtime.HandleError(fmt.Errorf("DeletePrometheusAddlConfig '%s/%s' error:%s", namespace, tenantName, err.Error()))
+			}
+			// try to delete pvc if set ReclaimStorageLabel:true
+			pvcList := corev1.PersistentVolumeClaimList{}
+			listOpt := client.ListOptions{
+				Namespace: namespace,
+			}
+			client.MatchingLabels{
+				"v1.min.io/tenant": tenantName,
+			}.ApplyToList(&listOpt)
+			err := c.k8sClient.List(ctx, &pvcList, &listOpt)
+			if err != nil {
+				runtime.HandleError(fmt.Errorf("PersistentVolumeClaimList  '%s/%s' error:%s", namespace, tenantName, err.Error()))
+			}
+			for _, pvc := range pvcList.Items {
+				if pvc.Labels[statefulsets.ReclaimStorageLabel] == "true" {
+					err := c.k8sClient.Delete(ctx, &pvc)
+					if err != nil {
+						runtime.HandleError(fmt.Errorf("Delete PersistentVolumeClaim '%s/%s/%s' error:%s", namespace, tenantName, pvc.Name, err.Error()))
+					}
+				}
 			}
 			return WrapResult(Result{}, nil)
 		}
@@ -1372,13 +1398,14 @@ func (c *Controller) syncHandler(key string) (Result, error) {
 
 	// Ensure we are only creating the bucket
 	if len(tenant.Spec.Buckets) > 0 {
-		if err := c.createBuckets(ctx, tenant, tenantConfiguration); err != nil {
+		if create, err := c.createBuckets(ctx, tenant, tenantConfiguration); err != nil {
 			klog.V(2).Infof("Unable to create MinIO buckets: %v", err)
 			c.RegisterEvent(ctx, tenant, corev1.EventTypeWarning, "BucketsCreatedFailed", fmt.Sprintf("Buckets creation failed: %s", err))
 			// retry after 5sec
 			return WrapResult(Result{RequeueAfter: time.Second * 5}, err)
+		} else if create {
+			c.RegisterEvent(ctx, tenant, corev1.EventTypeNormal, "BucketsCreated", "Buckets created")
 		}
-		c.RegisterEvent(ctx, tenant, corev1.EventTypeNormal, "BucketsCreated", "Buckets created")
 	}
 
 	// Finally, we update the status block of the Tenant resource to reflect the

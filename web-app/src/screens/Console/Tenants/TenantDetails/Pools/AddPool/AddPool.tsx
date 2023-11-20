@@ -25,12 +25,15 @@ import {
 import Grid from "@mui/material/Grid";
 import { niceBytes } from "../../../../../../common/utils";
 import { LinearProgress } from "@mui/material";
-import PageLayout from "../../../../Common/Layout/PageLayout";
-import GenericWizard from "../../../../Common/GenericWizard/GenericWizard";
-import { IWizardElement } from "../../../../Common/GenericWizard/types";
 import PoolResources from "./PoolResources";
-import ScreenTitle from "../../../../Common/ScreenTitle/ScreenTitle";
-import { BackLink, TenantsIcon } from "mds";
+import {
+  BackLink,
+  TenantsIcon,
+  PageLayout,
+  ScreenTitle,
+  Wizard,
+  WizardElement,
+} from "mds";
 
 import { AppState, useAppDispatch } from "../../../../../../store";
 import { useSelector } from "react-redux";
@@ -93,7 +96,7 @@ const AddPool = () => {
 
   const cancelButton = {
     label: "Cancel",
-    type: "other",
+    type: "custom" as "to" | "custom" | "next" | "back",
     enabled: true,
     action: () => {
       dispatch(resetPoolForm());
@@ -105,7 +108,7 @@ const AddPool = () => {
     componentRender: <AddPoolCreateButton key={"add-pool-crate"} />,
   };
 
-  const wizardSteps: IWizardElement[] = [
+  const wizardSteps: WizardElement[] = [
     {
       label: "Setup",
       componentRender: <PoolResources />,
@@ -149,6 +152,7 @@ const AddPool = () => {
                   {niceBytes((tenant?.total_size || 0).toString(10))}
                 </Fragment>
               }
+              actions={null}
             />
           </Grid>
           {sending && (
@@ -157,7 +161,7 @@ const AddPool = () => {
             </Grid>
           )}
           <Grid item xs={12} className={classes.pageBox}>
-            <GenericWizard wizardSteps={wizardSteps} />
+            <Wizard wizardSteps={wizardSteps} linearMode={false} />
           </Grid>
         </PageLayout>
       </Grid>

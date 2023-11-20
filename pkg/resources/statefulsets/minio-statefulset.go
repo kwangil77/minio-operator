@@ -34,6 +34,8 @@ import (
 
 const (
 	bucketDNSEnv = "MINIO_DNS_WEBHOOK_ENDPOINT"
+	// ReclaimStorageLabel - pvc with this label and the value is `true` means when tenant is being deleted the pvc will be deleted.
+	ReclaimStorageLabel = "reclaimStorage"
 )
 
 // Returns the MinIO environment variables set in configuration.
@@ -474,7 +476,6 @@ func NewPool(args *NewPoolArgs) *appsv1.StatefulSet {
 	serviceName := args.ServiceName
 	hostsTemplate := args.HostsTemplate
 	operatorVersion := args.OperatorVersion
-	operatorCATLS := args.OperatorCATLS
 	operatorImage := args.OperatorImage
 
 	var podVolumes []corev1.Volume
@@ -671,22 +672,6 @@ func NewPool(args *NewPoolArgs) *appsv1.StatefulSet {
 		})
 	}
 
-	if operatorCATLS {
-		// Mount Operator CA TLS certificate to MinIO ~/cert/CAs
-		operatorCATLSSecretName := "operator-ca-tls"
-		certVolumeSources = append(certVolumeSources, []corev1.VolumeProjection{
-			{
-				Secret: &corev1.SecretProjection{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: operatorCATLSSecretName,
-					},
-					Items: []corev1.KeyToPath{
-						{Key: "public.crt", Path: "CAs/operator-ca.crt"},
-					},
-				},
-			},
-		}...)
-	}
 	// If KES is enable mount TLS certificate secrets
 	if t.HasKESEnabled() {
 		// External Client certificates will have priority over AutoCert generated certificates
@@ -854,6 +839,12 @@ func NewPool(args *NewPoolArgs) *appsv1.StatefulSet {
 
 	if pool.VolumeClaimTemplate != nil {
 		pvClaim := *pool.VolumeClaimTemplate
+		if pool.ReclaimStorage != nil && *pool.ReclaimStorage {
+			if len(pvClaim.Labels) == 0 {
+				pvClaim.Labels = make(map[string]string)
+			}
+			pvClaim.Labels[ReclaimStorageLabel] = "true"
+		}
 		name := pvClaim.Name
 		for i := 0; i < int(pool.VolumesPerServer); i++ {
 			pvClaim.Name = name + strconv.Itoa(i)

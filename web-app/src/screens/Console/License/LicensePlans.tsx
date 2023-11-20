@@ -1,4 +1,4 @@
-//  This file is part of MinIO Console Server
+//  This file is part of MinIO Operator
 //  Copyright (c) 2022 MinIO, Inc.
 //
 //  This program is free software: you can redistribute it and/or modify
@@ -23,10 +23,11 @@ import {
   ConsoleEnterprise,
   ConsoleStandard,
   LicenseDocIcon,
+  Box,
+  breakPoints,
 } from "mds";
 import { useTheme } from "@mui/material/styles";
 import { SubnetInfo } from "./types";
-import { Box } from "@mui/material";
 import useMediaQuery from "@mui/material/useMediaQuery";
 import {
   COMMUNITY_PLAN_FEATURES,
@@ -369,9 +370,10 @@ const LicensePlans = ({ licenseInfo, operatorMode }: IRegisterStatus) => {
 
             margin: "0 1.5rem 0 1.5rem",
 
-            gridTemplateColumns: {
-              sm: "1fr 1fr 1fr 1fr",
-              xs: "1fr 1fr 1fr",
+            gridTemplateColumns: "1fr 1fr 1fr 1fr",
+
+            [`@media (max-width: ${breakPoints.sm}px)`]: {
+              gridTemplateColumns: "1fr 1fr 1fr",
             },
 
             "&.paid-plans-only": {
