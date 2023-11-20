@@ -4,7 +4,7 @@ operator:
   ###
   # An array of environment variables to pass to the Operator deployment.
   # Pass an empty array to start Operator with defaults.
-  # 
+  #
   # For example:
   #
   # .. code-block:: yaml
@@ -21,7 +21,7 @@ operator:
   #    - name: WATCHED_NAMESPACE
   #      value: ""
   #    - name: MINIO_OPERATOR_RUNTIME
-  #      value: "OpenShift" 
+  #      value: "OpenShift"
   #
   # See `Operator environment variables <https://github.com/minio/operator/blob/master/docs/env-variables.md>`__ for a list of all supported values.
   env:
@@ -29,19 +29,19 @@ operator:
       value: "on"
   ###
   # Specify the Operator container image to use for the deployment.
-  # ``image.tag`` 
+  # ``image.tag``
   # For example, the following sets the image to the ``quay.io/minio/operator`` repo and the v5.0.11 tag.
   # The container pulls the image if not already present:
   #
   # .. code-block:: yaml
-  # 
+  #
   #    image:
   #      repository: quay.io/minio/operator
   #      tag: v5.0.11
   #      pullPolicy: IfNotPresent
   #
   # The chart also supports specifying an image based on digest value:
-  # 
+  #
   # .. code-block:: yaml
   #
   #    image:
@@ -97,7 +97,7 @@ operator:
   volumes: [ ]
   ###
   # An array of volume mount points associated to each Operator container.
-  # 
+  #
   # Specify each item in the array as follows:
   #
   # .. code-block:: yaml
@@ -147,7 +147,7 @@ operator:
   # These settings determine the distribution of pods across worker nodes.
   topologySpreadConstraints: [ ]
   ###
-  # 
+  #
   # The `Requests or Limits <https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/>`__ for resources to associate to Operator pods.
   #
   # These settings can control the minimum and maximum resources requested for each pod.
@@ -157,6 +157,8 @@ operator:
       cpu: 200m
       memory: 256Mi
       ephemeral-storage: 500Mi
+  service:
+    type: ClusterIP
 
 ###
 # Root key for Operator Console
@@ -168,19 +170,19 @@ console:
   enabled: true
   ###
   # Specify the Operator Console container image to use for the deployment.
-  # ``image.tag`` 
+  # ``image.tag``
   # For example, the following sets the image to the ``quay.io/minio/operator`` repo and the v5.0.11 tag.
   # The container pulls the image if not already present:
   #
   # .. code-block:: yaml
-  # 
+  #
   #    image:
   #      repository: quay.io/minio/operator
   #      tag: v5.0.11
   #      pullPolicy: IfNotPresent
   #
   # The chart also supports specifying an image based on digest value:
-  # 
+  #
   # .. code-block:: yaml
   #
   #    image:
@@ -252,7 +254,7 @@ console:
   # These settings determine the distribution of pods across worker nodes.
   topologySpreadConstraints: [ ]
   ###
-  # 
+  #
   # The `Requests or Limits <https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/>`__ for resources to associate to Operator Console pods.
   #
   # These settings can control the minimum and maximum resources requested for each pod.
@@ -261,6 +263,8 @@ console:
     requests:
       cpu: 0.25
       memory: 512Mi
+  service:
+    type: ClusterIP
   ###
   # The Kubernetes `SecurityContext <https://kubernetes.io/docs/tasks/configure-pod-container/security-context/>`__ to use for deploying Operator Console resources.
   #
@@ -296,7 +300,7 @@ console:
       emptyDir: {}
   ###
   # An array of volume mount points associated to each Operator Console container.
-  # 
+  #
   # Specify each item in the array as follows:
   #
   # .. code-block:: yaml
