@@ -160,6 +160,9 @@ operator:
       memory: 256Mi
       ephemeral-storage: 500Mi
 
+  service:
+    type: ClusterIP
+
 ###
 # Root key for Operator Console
 console:
@@ -276,6 +279,9 @@ console:
   containerSecurityContext:
     runAsUser: 1000
     runAsNonRoot: true
+
+  service:
+    type: ClusterIP
   ###
   # Configures `Ingress <https://kubernetes.io/docs/concepts/services-networking/ingress/>`__ for the Operator Console.
   #
