@@ -329,7 +329,7 @@ type TenantSpec struct {
 	//
 	// The Operator creates each user with the `consoleAdmin` policy by default. You can change the assigned policy after the Tenant starts. +
 	// +optional
-	Users []*corev1.LocalObjectReference `json:"users,omitempty"`
+	Users []corev1.LocalObjectReference `json:"users,omitempty"`
 	// *Optional* +
 	//
 	// Create buckets when creating a new tenant. Skip if bucket with given name already exists
@@ -410,12 +410,12 @@ type LocalCertificateReference struct {
 type ExposeServices struct {
 	// *Optional* +
 	//
-	// Directs the Operator to expose the MinIO service. Defaults to `true`. +
+	// Directs the Operator to expose the MinIO service. Defaults to `false`. +
 	// +optional
 	MinIO bool `json:"minio,omitempty"`
 	// *Optional* +
 	//
-	// Directs the Operator to expose the MinIO Console service. Defaults to `true`. +
+	// Directs the Operator to expose the MinIO Console service. Defaults to `false`. +
 	// +optional
 	Console bool `json:"console,omitempty"`
 }

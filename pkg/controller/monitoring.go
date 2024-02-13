@@ -20,7 +20,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/minio/madmin-go/v2"
+	"github.com/minio/madmin-go/v3"
 
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -38,8 +38,6 @@ const (
 	HealthHealingMessage = "Healing"
 	// HealthReduceAvailabilityMessage some drives are offline
 	HealthReduceAvailabilityMessage = "Reduced Availability"
-	// HealthAboutToLoseQuorumMessage means we are close to losing write capabilities
-	HealthAboutToLoseQuorumMessage = "About to lose quorum"
 )
 
 // recurrentTenantStatusMonitor loop that checks every 3 minutes for tenants health
@@ -122,6 +120,11 @@ func (c *Controller) updateHealthStatusForTenant(tenant *miniov2.Tenant) error {
 	if err != nil {
 		// show the error and continue
 		klog.Infof("'%s/%s' Failed to get cluster health: %v", tenant.Namespace, tenant.Name, err)
+		err = c.renewExternalCerts(context.Background(), tenant, err)
+		if err != nil {
+			klog.Errorf("There was an error on certificate renewal %s", err)
+			return err
+		}
 		return nil
 	}
 
@@ -258,16 +261,6 @@ type HealthResult struct {
 	HealingDrives     int
 	WriteQuorumDrives int
 }
-
-// HealthMode type of query we want to perform to MinIO cluster health
-type HealthMode string
-
-const (
-	// MaintenanceMode query type for when we want to ask MinIO if we can take down 1 server
-	MaintenanceMode HealthMode = "MaintenanceMode"
-	// RegularMode query type for when we want to ask MinIO the current state of healing/health
-	RegularMode = "RegularMode"
-)
 
 // processNextHealthCheckItem will read a single work item off the workqueue and
 // attempt to process it, by calling the syncHandler.

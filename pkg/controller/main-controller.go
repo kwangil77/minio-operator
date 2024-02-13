@@ -28,7 +28,7 @@ import (
 
 	"github.com/minio/operator/pkg/utils"
 
-	"github.com/minio/madmin-go/v2"
+	"github.com/minio/madmin-go/v3"
 	"github.com/minio/operator/pkg/common"
 	xcerts "github.com/minio/pkg/certs"
 
@@ -73,9 +73,9 @@ import (
 	miniov2 "github.com/minio/operator/pkg/apis/minio.min.io/v2"
 	clientset "github.com/minio/operator/pkg/client/clientset/versioned"
 	minioscheme "github.com/minio/operator/pkg/client/clientset/versioned/scheme"
+	jobinformers "github.com/minio/operator/pkg/client/informers/externalversions/job.min.io/v1alpha1"
 	informers "github.com/minio/operator/pkg/client/informers/externalversions/minio.min.io/v2"
 	stsInformers "github.com/minio/operator/pkg/client/informers/externalversions/sts.min.io/v1alpha1"
-	"github.com/minio/operator/pkg/resources/services"
 	"github.com/minio/operator/pkg/resources/statefulsets"
 )
 
@@ -197,6 +197,11 @@ type Controller struct {
 	// policyBindingListerSynced returns true if the PolicyBinding shared informer
 	// has synced at least once.
 	policyBindingListerSynced cache.InformerSynced
+
+	// controllers denotes the list of components controlled
+	// by the controller. Each component is itself
+	// a controller. This handle is for supporting the abstraction.
+	controllers []*JobController
 }
 
 // EventType is Event type to handle
@@ -208,7 +213,7 @@ const (
 	LeaderElection
 )
 
-// EventNotification - structure to send messages trough a channel regarding a error event to be handled
+// EventNotification - structure to send messages through a channel regarding a error event to be handled
 type EventNotification struct {
 	// Err the error to handle if any, null when is just a message
 	Err error
@@ -216,8 +221,24 @@ type EventNotification struct {
 	Type EventType
 }
 
-// NewController returns a new sample controller
-func NewController(podName string, namespacesToWatch set.StringSet, kubeClientSet kubernetes.Interface, k8sClient client.Client, minioClientSet clientset.Interface, promClient promclientset.Interface, statefulSetInformer appsinformers.StatefulSetInformer, deploymentInformer appsinformers.DeploymentInformer, podInformer coreinformers.PodInformer, tenantInformer informers.TenantInformer, policyBindingInformer stsInformers.PolicyBindingInformer, serviceInformer coreinformers.ServiceInformer, hostsTemplate, operatorVersion string) *Controller {
+// NewController returns a new Operator Controller
+func NewController(
+	podName string,
+	namespacesToWatch set.StringSet,
+	kubeClientSet kubernetes.Interface,
+	k8sClient client.Client,
+	minioClientSet clientset.Interface,
+	promClient promclientset.Interface,
+	statefulSetInformer appsinformers.StatefulSetInformer,
+	deploymentInformer appsinformers.DeploymentInformer,
+	podInformer coreinformers.PodInformer,
+	tenantInformer informers.TenantInformer,
+	policyBindingInformer stsInformers.PolicyBindingInformer,
+	serviceInformer coreinformers.ServiceInformer,
+	hostsTemplate,
+	operatorVersion string,
+	jobinformer jobinformers.MinIOJobInformer,
+) *Controller {
 	// Create event broadcaster
 	// Add minio-controller types to the default Kubernetes Scheme so Events can be
 	// logged for minio-controller types.
@@ -245,8 +266,25 @@ func NewController(podName string, namespacesToWatch set.StringSet, kubeClientSe
 			}
 		}
 	}
+	if len(oprImg) > 0 {
+		imageInfo := strings.Split(oprImg, ":")
+		if len(imageInfo) == 2 {
+			_, err = kubeClientSet.AppsV1().Deployments(ns).Patch(ctx, getOperatorDeploymentName(), types.MergePatchType, []byte(`{"metadata":{"annotations":{"min.io/operator":"`+imageInfo[1]+`"}}}`), metav1.PatchOptions{})
+			if err != nil {
+				klog.Errorf("Patch operator deployments annotations['min.io/operator':'%s'] err: %s", imageInfo[1], err)
+			}
+		}
+	}
 
 	oprImg = env.Get(DefaultOperatorImageEnv, oprImg)
+
+	//controllerConfig := controllerConfig{
+	//	serviceLister:     serviceInformer.Lister(),
+	//	kubeClientSet:     kubeClientSet,
+	//	statefulSetLister: statefulSetInformer.Lister(),
+	//	deploymentLister:  deploymentInformer.Lister(),
+	//	recorder:          recorder,
+	//}
 
 	controller := &Controller{
 		podName:                   podName,
@@ -270,6 +308,18 @@ func NewController(podName string, namespacesToWatch set.StringSet, kubeClientSe
 		operatorVersion:           operatorVersion,
 		policyBindingListerSynced: policyBindingInformer.Informer().HasSynced,
 		operatorImage:             oprImg,
+		controllers: []*JobController{
+			NewJobController(
+				jobinformer,
+				namespacesToWatch,
+				jobinformer.Lister(),
+				jobinformer.Informer().HasSynced,
+				kubeClientSet,
+				statefulSetInformer.Lister(),
+				recorder,
+				queue.NewNamedRateLimitingQueue(MinIOControllerRateLimiter(), "Tenants"),
+			),
+		},
 	}
 
 	// Initialize operator HTTP upgrade server handlers
@@ -412,6 +462,15 @@ func leaderRun(ctx context.Context, c *Controller, threadiness int, stopCh <-cha
 	klog.Info("Starting workers")
 	// Launch two workers to process Tenant resources
 	for i := 0; i < threadiness; i++ {
+		go wait.Until(c.runWorker, time.Second, stopCh)
+	}
+
+	klog.Info("Starting Job workers")
+	JobController := c.controllers[0]
+	// fmt.Println(controller.SyncHandler())
+	// Launch two workers to process Job resources
+	for i := 0; i < threadiness; i++ {
+		go wait.Until(JobController.runJobWorker, time.Second, stopCh)
 		go wait.Until(c.runWorker, time.Second, stopCh)
 	}
 
@@ -721,6 +780,7 @@ func key2NamespaceName(key string) (namespace, name string) {
 // converge the two. It then updates the Status block of the Tenant resource
 // with the current status of the resource.
 func (c *Controller) syncHandler(key string) (Result, error) {
+	klog.Info("MinIO Tenant Main loop!!!!")
 	ctx := context.Background()
 	cOpts := metav1.CreateOptions{}
 	uOpts := metav1.UpdateOptions{}
@@ -799,7 +859,7 @@ func (c *Controller) syncHandler(key string) (Result, error) {
 			if _, err2 := c.updateTenantStatus(ctx, tenant, err.Error(), 0); err2 != nil {
 				klog.V(2).Infof(err2.Error())
 			}
-			c.RegisterEvent(ctx, tenant, corev1.EventTypeWarning, "MissingCreds", "Tenant is missing root credentials")
+			c.recorder.Event(tenant, corev1.EventTypeWarning, "MissingCreds", "Tenant is missing root credentials")
 			return WrapResult(Result{}, nil)
 		}
 		return WrapResult(Result{}, err)
@@ -891,59 +951,11 @@ func (c *Controller) syncHandler(key string) (Result, error) {
 		return WrapResult(Result{}, err)
 	}
 
-	// Handle the Internal Headless Service for Tenant StatefulSet
-	hlSvc, err := c.serviceLister.Services(tenant.Namespace).Get(tenant.MinIOHLServiceName())
+	// Check MinIO Headless Service used for internode communication
+	err = c.checkMinIOHLSvc(ctx, tenant, nsName)
 	if err != nil {
-		if k8serrors.IsNotFound(err) {
-			if tenant, err = c.updateTenantStatus(ctx, tenant, StatusProvisioningHLService, 0); err != nil {
-				return WrapResult(Result{}, err)
-			}
-			klog.V(2).Infof("Creating a new Headless Service for cluster %q", nsName)
-			// Create the headless service for the tenant
-			hlSvc = services.NewHeadlessForMinIO(tenant)
-			_, err = c.kubeClientSet.CoreV1().Services(tenant.Namespace).Create(ctx, hlSvc, cOpts)
-			if err != nil {
-				return WrapResult(Result{}, err)
-			}
-			c.RegisterEvent(ctx, tenant, corev1.EventTypeNormal, "SvcCreated", "Headless Service created")
-		} else {
-			return WrapResult(Result{}, err)
-		}
-	} else {
-		existingPorts := hlSvc.Spec.Ports
-		sftpPortFound := false
-		for _, port := range existingPorts {
-			if port.Name == miniov2.MinIOServiceSFTPPortName {
-				sftpPortFound = true
-				break
-			}
-		}
-		var newPorts []corev1.ServicePort
-		if tenant.Spec.Features != nil && tenant.Spec.Features.EnableSFTP != nil && *tenant.Spec.Features.EnableSFTP {
-			if !sftpPortFound {
-				newPorts = existingPorts
-				newPorts = append(newPorts, corev1.ServicePort{Port: miniov2.MinIOSFTPPort, Name: miniov2.MinIOServiceSFTPPortName})
-				hlSvc.Spec.Ports = newPorts
-				_, err := c.kubeClientSet.CoreV1().Services(tenant.Namespace).Update(ctx, hlSvc, metav1.UpdateOptions(cOpts))
-				if err != nil {
-					return WrapResult(Result{}, err)
-				}
-			}
-		} else {
-			if sftpPortFound {
-				for _, port := range existingPorts {
-					if port.Name == miniov2.MinIOServiceSFTPPortName {
-						continue
-					}
-					newPorts = append(newPorts, port)
-				}
-				hlSvc.Spec.Ports = newPorts
-				_, err := c.kubeClientSet.CoreV1().Services(tenant.Namespace).Update(ctx, hlSvc, metav1.UpdateOptions(cOpts))
-				if err != nil {
-					return WrapResult(Result{}, err)
-				}
-			}
-		}
+		klog.V(2).Infof("error consolidating headless service: %s", err.Error())
+		return WrapResult(Result{}, err)
 	}
 
 	// List all MinIO Tenants in this namespace.
@@ -992,7 +1004,8 @@ func (c *Controller) syncHandler(key string) (Result, error) {
 	// check if operator-ca-tls has to be updated or re-created in the tenant namespace
 	operatorCATLSExists, err := c.checkOperatorCAForTenant(ctx, tenant)
 	if err != nil {
-		return WrapResult(Result{}, err)
+		// Don't return here as we get stuck when recreating the stateful set
+		klog.Infof("There was an error while updating the certificate %s", err)
 	}
 
 	// consolidate the status of all pools. this is meant to cover for legacy tenants
@@ -1063,7 +1076,7 @@ func (c *Controller) syncHandler(key string) (Result, error) {
 				SkipEnvVars:     skipEnvVars,
 				Pool:            &pool,
 				PoolStatus:      &tenant.Status.Pools[i],
-				ServiceName:     hlSvc.Name,
+				ServiceName:     tenant.MinIOHLServiceName(),
 				HostsTemplate:   c.hostsTemplate,
 				OperatorVersion: c.operatorVersion,
 				OperatorCATLS:   operatorCATLSExists,
@@ -1073,7 +1086,7 @@ func (c *Controller) syncHandler(key string) (Result, error) {
 			if err != nil {
 				return WrapResult(Result{}, err)
 			}
-			c.RegisterEvent(ctx, tenant, corev1.EventTypeNormal, "PoolCreated", fmt.Sprintf("Tenant pool %s created", pool.Name))
+			c.recorder.Event(tenant, corev1.EventTypeNormal, "PoolCreated", fmt.Sprintf("Tenant pool %s created", pool.Name))
 			// Report the pool is properly created
 			tenant.Status.Pools[i].State = miniov2.PoolCreated
 			// mark we are adding a new pool to the next block can act accordingly
@@ -1234,7 +1247,7 @@ func (c *Controller) syncHandler(key string) (Result, error) {
 				// Update failed, nothing needs to be changed in the container
 				return WrapResult(Result{}, err)
 			}
-			c.RegisterEvent(ctx, tenant, corev1.EventTypeWarning, "Inplace update is disabled, falling back to performing only statefulset update.", fmt.Sprintf("Tenant %s", tenant.Name))
+			c.recorder.Event(tenant, corev1.EventTypeWarning, "Inplace update is disabled, falling back to performing only statefulset update.", fmt.Sprintf("Tenant %s", tenant.Name))
 		}
 		if err == nil {
 			if us.CurrentVersion != us.UpdatedVersion {
@@ -1273,7 +1286,7 @@ func (c *Controller) syncHandler(key string) (Result, error) {
 				SkipEnvVars:     skipEnvVars,
 				Pool:            &pool,
 				PoolStatus:      &tenant.Status.Pools[i],
-				ServiceName:     hlSvc.Name,
+				ServiceName:     tenant.MinIOHLServiceName(),
 				HostsTemplate:   c.hostsTemplate,
 				OperatorVersion: c.operatorVersion,
 				OperatorCATLS:   operatorCATLSExists,
@@ -1282,7 +1295,7 @@ func (c *Controller) syncHandler(key string) (Result, error) {
 			if _, err = c.kubeClientSet.AppsV1().StatefulSets(tenant.Namespace).Update(ctx, ss, uOpts); err != nil {
 				return WrapResult(Result{}, err)
 			}
-			c.RegisterEvent(ctx, tenant, corev1.EventTypeNormal, "PoolUpdated", fmt.Sprintf("Tenant pool %s updated", pool.Name))
+			c.recorder.Event(tenant, corev1.EventTypeNormal, "PoolUpdated", fmt.Sprintf("Tenant pool %s updated", pool.Name))
 		}
 
 	}
@@ -1323,7 +1336,7 @@ func (c *Controller) syncHandler(key string) (Result, error) {
 			SkipEnvVars:     skipEnvVars,
 			Pool:            &pool,
 			PoolStatus:      &tenant.Status.Pools[i],
-			ServiceName:     hlSvc.Name,
+			ServiceName:     tenant.MinIOHLServiceName(),
 			HostsTemplate:   c.hostsTemplate,
 			OperatorVersion: c.operatorVersion,
 			OperatorCATLS:   operatorCATLSExists,
@@ -1389,22 +1402,22 @@ func (c *Controller) syncHandler(key string) (Result, error) {
 	if !tenant.Status.ProvisionedUsers && len(tenant.Spec.Users) > 0 {
 		if err := c.createUsers(ctx, tenant, tenantConfiguration); err != nil {
 			klog.V(2).Infof("Unable to create MinIO users: %v", err)
-			c.RegisterEvent(ctx, tenant, corev1.EventTypeWarning, "UsersCreatedFailed", fmt.Sprintf("Users creation failed: %s", err))
+			c.recorder.Event(tenant, corev1.EventTypeWarning, "UsersCreatedFailed", fmt.Sprintf("Users creation failed: %s", err))
 			// retry after 5sec
 			return WrapResult(Result{RequeueAfter: time.Second * 5}, nil)
 		}
-		c.RegisterEvent(ctx, tenant, corev1.EventTypeNormal, "UsersCreated", "Users created")
+		c.recorder.Event(tenant, corev1.EventTypeNormal, "UsersCreated", "Users created")
 	}
 
 	// Ensure we are only creating the bucket
 	if len(tenant.Spec.Buckets) > 0 {
 		if create, err := c.createBuckets(ctx, tenant, tenantConfiguration); err != nil {
 			klog.V(2).Infof("Unable to create MinIO buckets: %v", err)
-			c.RegisterEvent(ctx, tenant, corev1.EventTypeWarning, "BucketsCreatedFailed", fmt.Sprintf("Buckets creation failed: %s", err))
+			c.recorder.Event(tenant, corev1.EventTypeWarning, "BucketsCreatedFailed", fmt.Sprintf("Buckets creation failed: %s", err))
 			// retry after 5sec
 			return WrapResult(Result{RequeueAfter: time.Second * 5}, err)
 		} else if create {
-			c.RegisterEvent(ctx, tenant, corev1.EventTypeNormal, "BucketsCreated", "Buckets created")
+			c.recorder.Event(tenant, corev1.EventTypeNormal, "BucketsCreated", "Buckets created")
 		}
 	}
 

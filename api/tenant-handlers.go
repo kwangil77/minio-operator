@@ -30,7 +30,7 @@ import (
 
 	utils2 "github.com/minio/operator/pkg/http"
 
-	"github.com/minio/madmin-go/v2"
+	"github.com/minio/madmin-go/v3"
 
 	"github.com/minio/operator/api/operations/operator_api"
 
@@ -864,7 +864,7 @@ func parseTenantPoolRequest(poolParams *models.Pool) (*miniov2.Pool, error) {
 		AccessModes: []corev1.PersistentVolumeAccessMode{
 			corev1.ReadWriteOnce,
 		},
-		Resources: corev1.ResourceRequirements{
+		Resources: corev1.VolumeResourceRequirements{
 			Requests: corev1.ResourceList{
 				corev1.ResourceStorage: *volumeSize,
 			},
@@ -1292,6 +1292,7 @@ func parseTenantPool(pool *miniov2.Pool) *models.Pool {
 		VolumeConfiguration: &models.PoolVolumeConfiguration{
 			Size:             size,
 			StorageClassName: storageClassName,
+			Annotations:      pool.VolumeClaimTemplate.ObjectMeta.Annotations,
 		},
 		NodeSelector:     pool.NodeSelector,
 		Resources:        resources,

@@ -46,7 +46,7 @@ func (c *Controller) checkMinIOSvc(ctx context.Context, tenant *miniov2.Tenant, 
 			if err != nil {
 				return err
 			}
-			c.RegisterEvent(ctx, tenant, corev1.EventTypeNormal, "SvcCreated", "MinIO Service Created")
+			c.recorder.Event(tenant, corev1.EventTypeNormal, "SvcCreated", "MinIO Service Created")
 		} else {
 			return err
 		}
@@ -85,7 +85,7 @@ func (c *Controller) checkMinIOSvc(ctx context.Context, tenant *miniov2.Tenant, 
 		if err != nil {
 			return err
 		}
-		c.RegisterEvent(ctx, tenant, corev1.EventTypeNormal, "Updated", "MinIO Service Updated")
+		c.recorder.Event(tenant, corev1.EventTypeNormal, "Updated", "MinIO Service Updated")
 	}
 	return err
 }
@@ -124,4 +124,55 @@ func minioSvcMatchesSpecification(svc *v1.Service, expectedSvc *v1.Service) (boo
 		return false, errors.New("Service type doesn't match")
 	}
 	return true, nil
+}
+
+// checkMinIOHLSvc validates the existence of the MinIO headless service and validate its status against what
+// the specification  states
+func (c *Controller) checkMinIOHLSvc(ctx context.Context, tenant *miniov2.Tenant, nsName types.NamespacedName) error {
+	// Handle the Internal Headless Service for Tenant StatefulSet
+	hlSvc, err := c.serviceLister.Services(tenant.Namespace).Get(tenant.MinIOHLServiceName())
+	if err != nil {
+		if k8serrors.IsNotFound(err) {
+			if tenant, err = c.updateTenantStatus(ctx, tenant, StatusProvisioningHLService, 0); err != nil {
+				return err
+			}
+			klog.V(2).Infof("Creating a new Headless Service for cluster %q", nsName)
+			// Create the headless service for the tenant
+			hlSvc = services.NewHeadlessForMinIO(tenant)
+			_, err = c.kubeClientSet.CoreV1().Services(tenant.Namespace).Create(ctx, hlSvc, metav1.CreateOptions{})
+			if err != nil {
+				return err
+			}
+			c.recorder.Event(tenant, corev1.EventTypeNormal, "SvcCreated", "Headless Service created")
+		} else {
+			return err
+		}
+	}
+	// compare the current version of the service to what we expect
+	expectedHlSvc := services.NewHeadlessForMinIO(tenant)
+	// does the current service matches our specification?
+	minioSvcMatchesSpec, err := minioSvcMatchesSpecification(hlSvc, expectedHlSvc)
+
+	// check the specification of the MinIO ClusterIP service
+	if !minioSvcMatchesSpec {
+		if err != nil {
+			klog.Infof("Headless Services don't match: %s", err)
+		}
+
+		// impose what we care about
+		hlSvc.ObjectMeta.Annotations = expectedHlSvc.ObjectMeta.Annotations
+		hlSvc.ObjectMeta.Labels = expectedHlSvc.ObjectMeta.Labels
+		hlSvc.Spec.Ports = expectedHlSvc.Spec.Ports
+
+		// update the selector
+		hlSvc.Spec.Selector = expectedHlSvc.Spec.Selector
+
+		_, err = c.kubeClientSet.CoreV1().Services(tenant.Namespace).Update(ctx, hlSvc, metav1.UpdateOptions{})
+		if err != nil {
+			return err
+		}
+		c.recorder.Event(tenant, corev1.EventTypeNormal, "Updated", "Headless Service Updated")
+
+	}
+	return err
 }

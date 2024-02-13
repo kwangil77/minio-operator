@@ -24,6 +24,7 @@ import (
 
 	"github.com/minio/kubectl-minio/cmd/helpers"
 	"github.com/minio/kubectl-minio/cmd/resources"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
@@ -51,7 +52,7 @@ func newTenantExpandCmd(out io.Writer, errOut io.Writer) *cobra.Command {
 	v := &expandCmd{out: out, errOut: errOut}
 
 	cmd := &cobra.Command{
-		Use:     "expand <TENANTNAME> --pool <POOLNAME> --servers <NSERVERS> --volumes <NVOLUMES> --capacity <SIZE> --namespace <TENANTNS>",
+		Use:     "expand <TENANTNAME> --pool <POOLNAME> --servers <NSERVERS> ( --volumes <NVOLUMES> | --volumes-per-server <NVOLUMESPERSERVER> ) --capacity <SIZE> --namespace <TENANTNS>",
 		Short:   "Add capacity to existing tenant",
 		Long:    expandDesc,
 		Example: expandExample,
@@ -73,12 +74,13 @@ func newTenantExpandCmd(out io.Writer, errOut io.Writer) *cobra.Command {
 	f.StringVarP(&v.tenantOpts.PoolName, "pool", "p", "", "name for this pool expansion")
 	f.Int32Var(&v.tenantOpts.Servers, "servers", 0, "total number of pods to add to tenant")
 	f.Int32Var(&v.tenantOpts.Volumes, "volumes", 0, "total number of volumes to add to tenant")
+	f.Int32Var(&v.tenantOpts.VolumesPerServer, "volumes-per-server", 0, "number of volumes in each server in the MinIO tenant")
 	f.StringVar(&v.tenantOpts.Capacity, "capacity", "", "total raw capacity to add to tenant, e.g. 16Ti")
 	f.StringVarP(&v.tenantOpts.StorageClass, "storage-class", "s", helpers.DefaultStorageclass, "storage class for the expanded MinIO tenant pool (can be different than original pool)")
+	f.BoolVar(&v.tenantOpts.DisableAntiAffinity, "enable-host-sharing", false, "[TESTING-ONLY] disable anti-affinity to allow pods to be co-located on a single node (unsupported in production environment)")
 	f.BoolVarP(&v.output, "output", "o", false, "generate MinIO tenant yaml with expansion details")
 
 	cmd.MarkFlagRequired("servers")
-	cmd.MarkFlagRequired("volumes")
 	cmd.MarkFlagRequired("capacity")
 	return cmd
 }
@@ -123,18 +125,24 @@ func (v *expandCmd) run() error {
 		return err
 	}
 	currentCapacity := helpers.TotalCapacity(*t)
-	volumesPerServer := helpers.VolumesPerServer(v.tenantOpts.Volumes, v.tenantOpts.Servers)
+	// Derive Volumes or VolumesPerServer in the absence of the other
+	// Exclusively either variable is guaranteed to exist
+	if v.tenantOpts.Volumes == 0 {
+		v.tenantOpts.Volumes = v.tenantOpts.VolumesPerServer * v.tenantOpts.Servers
+	} else {
+		v.tenantOpts.VolumesPerServer = helpers.VolumesPerServer(v.tenantOpts.Volumes, v.tenantOpts.Servers)
+	}
 	capacityPerVolume, err := helpers.CapacityPerVolume(v.tenantOpts.Capacity, v.tenantOpts.Volumes)
 	if err != nil {
 		return err
 	}
 
-	// Tenant pool id is zero based, generating pool using the count of existing pools in the tenant
+	// Generate pool name using the state of existing pools in the tenant
 	if v.tenantOpts.PoolName == "" {
-		v.tenantOpts.PoolName = resources.GeneratePoolName(len(t.Spec.Pools))
+		v.tenantOpts.PoolName = resources.GeneratePoolName(t.Spec.Pools)
 	}
 
-	t.Spec.Pools = append(t.Spec.Pools, resources.Pool(&v.tenantOpts, volumesPerServer, *capacityPerVolume))
+	t.Spec.Pools = append(t.Spec.Pools, resources.Pool(&v.tenantOpts, v.tenantOpts.VolumesPerServer, *capacityPerVolume))
 	expandedCapacity := helpers.TotalCapacity(*t)
 	if !v.output {
 		fmt.Printf(Bold(fmt.Sprintf("\nExpanding Tenant '%s/%s' from %s to %s\n\n", t.ObjectMeta.Name, t.ObjectMeta.Namespace, currentCapacity, expandedCapacity)))

@@ -21,6 +21,7 @@ import (
 	"io/fs"
 	"log"
 	"path"
+	"slices"
 	"strings"
 
 	"sigs.k8s.io/kustomize/kyaml/filesys"
@@ -69,7 +70,7 @@ func Pool(opts *TenantOptions, volumes int32, q resource.Quantity) miniov2.Pool 
 			},
 			Spec: corev1.PersistentVolumeClaimSpec{
 				AccessModes: []corev1.PersistentVolumeAccessMode{helpers.MinIOAccessMode},
-				Resources: corev1.ResourceRequirements{
+				Resources: corev1.VolumeResourceRequirements{
 					Requests: tenantStorage(q),
 				},
 			},
@@ -85,11 +86,18 @@ func Pool(opts *TenantOptions, volumes int32, q resource.Quantity) miniov2.Pool 
 				RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
 					{
 						LabelSelector: &metav1.LabelSelector{
-							MatchExpressions: []metav1.LabelSelectorRequirement{{
-								Key:      miniov2.TenantLabel,
-								Operator: "In",
-								Values:   []string{opts.Name},
-							}},
+							MatchExpressions: []metav1.LabelSelectorRequirement{
+								{
+									Key:      miniov2.TenantLabel,
+									Operator: "In",
+									Values:   []string{opts.Name},
+								},
+								{
+									Key:      miniov2.PoolLabel,
+									Operator: "In",
+									Values:   []string{opts.PoolName},
+								},
+							},
 						},
 						TopologyKey: "kubernetes.io/hostname",
 					},
@@ -101,8 +109,19 @@ func Pool(opts *TenantOptions, volumes int32, q resource.Quantity) miniov2.Pool 
 }
 
 // GeneratePoolName Pool Name Generator
-func GeneratePoolName(poolNumber int) string {
-	return fmt.Sprintf("pool-%d", poolNumber)
+func GeneratePoolName(pools []miniov2.Pool) string {
+	poolCounter := 0
+	var poolNames []string
+	for _, pool := range pools {
+		poolNames = append(poolNames, pool.Name)
+	}
+	for poolCounter < len(poolNames) {
+		if !(slices.Contains(poolNames, fmt.Sprintf("pool-%d", poolCounter))) {
+			return fmt.Sprintf("pool-%d", poolCounter)
+		}
+		poolCounter++
+	}
+	return fmt.Sprintf("pool-%d", poolCounter)
 }
 
 // GetSchemeDecoder returns a decoder for the scheme's that we use

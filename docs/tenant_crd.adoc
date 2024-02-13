@@ -4,8 +4,8 @@
 [id="{p}-api-reference"]
 == API Reference
 
-:minio-image: https://hub.docker.com/r/minio/minio/tags[minio/minio:RELEASE.2023-11-15T20-43-25Z]
-:kes-image: https://hub.docker.com/r/minio/kes/tags[minio/kes:2023-11-10T10-44-28Z]
+:minio-image: https://hub.docker.com/r/minio/minio/tags[minio/minio:RELEASE.2024-02-09T21-25-16Z]
+:kes-image: https://hub.docker.com/r/minio/kes/tags[minio/kes:2024-01-11T13-09-29Z]
 
 
 [id="{anchor_prefix}-minio-min-io-v2"]
@@ -101,6 +101,16 @@ CertificateStatus keeps track of all the certificates managed by the operator
 |===
 
 
+[id="{anchor_prefix}-github-com-minio-operator-pkg-apis-minio-min-io-v2-customcertificateconfig"]
+==== CustomCertificateConfig 
+
+CustomCertificateConfig (`customCertificateConfig`) provides attributes associated of the TLS certificates manually added to the Operator as part of tenant creation. These fields contain no data if there are no custom TLS certificates.
+
+.Appears In:
+****
+- xref:{anchor_prefix}-github-com-minio-operator-pkg-apis-minio-min-io-v2-customcertificates[$$CustomCertificates$$]
+****
+
 
 
 [id="{anchor_prefix}-github-com-minio-operator-pkg-apis-minio-min-io-v2-customcertificates"]
@@ -148,11 +158,11 @@ ExposeServices (`exposeServices`) defines the exposure of the MinIO object stora
 
 |*`minio`* __boolean__ 
 |*Optional* + 
- Directs the Operator to expose the MinIO service. Defaults to `true`. +
+ Directs the Operator to expose the MinIO service. Defaults to `false`. +
 
 |*`console`* __boolean__ 
 |*Optional* + 
- Directs the Operator to expose the MinIO Console service. Defaults to `true`. +
+ Directs the Operator to expose the MinIO Console service. Defaults to `false`. +
 
 |===
 
@@ -255,11 +265,11 @@ KESConfig (`kes`) defines the configuration of the https://github.com/minio/kes[
 
 |*`gcpCredentialSecretName`* __string__ 
 |*Optional* + 
- Specify the GCP default credentials to be used for KES to authenticate to GCP key store
+  Specify the GCP default credentials to be used for KES to authenticate to GCP key store
 
 |*`gcpWorkloadIdentityPool`* __string__ 
 |*Optional* + 
- Specify the name of the workload identity pool (This is required for generating service account token)
+  Specify the name of the workload identity pool (This is required for generating service account token)
 
 |*`annotations`* __object (keys:string, values:string)__ 
 |*Optional* + 

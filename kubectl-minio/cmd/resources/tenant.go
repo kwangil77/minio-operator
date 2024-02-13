@@ -33,6 +33,7 @@ type TenantOptions struct {
 	ConfigurationSecretName string
 	Servers                 int32
 	Volumes                 int32
+	VolumesPerServer        int32
 	Capacity                string
 	NS                      string
 	Image                   string
@@ -55,21 +56,34 @@ func (t TenantOptions) Validate() error {
 	if t.Servers <= 0 {
 		return errors.New("--servers is required. Specify a value greater than or equal to 1")
 	}
-	if t.Volumes <= 0 {
-		return errors.New("--volumes is required. Specify a positive value")
+	if t.Volumes <= 0 && t.VolumesPerServer <= 0 {
+		return errors.New("--volumes or --volumes-per-server is required. Specify either with a value greater than or equal to 1")
+	}
+	if t.Volumes > 0 && t.VolumesPerServer > 0 {
+		return errors.New("only either --volumes or --volumes-per-server may be specified")
+	}
+	if t.VolumesPerServer > 0 {
+		t.Volumes = t.VolumesPerServer * t.Servers
 	}
 	if t.Capacity == "" {
 		return errors.New("--capacity flag is required")
 	}
-	_, err := resource.ParseQuantity(t.Capacity)
+	capacity, err := resource.ParseQuantity(t.Capacity)
 	if err != nil {
 		if err == resource.ErrFormatWrong {
-			return errors.New("--capacity flag is incorrectly formatted. Please use suffix like 'T' or 'Ti' only")
+			return errors.New("--capacity flag is incorrectly formatted. Use a suffix like 'T' or 'Ti' only")
 		}
 		return err
 	}
+	if capacity.Sign() <= 0 {
+		return errors.New("--capacity needs to be greater than zero")
+	}
 	if t.Volumes%t.Servers != 0 {
 		return errors.New("--volumes should be a multiple of --servers")
+	}
+	_, err = helpers.CapacityPerVolume(t.Capacity, t.Volumes)
+	if err != nil {
+		return err
 	}
 	return nil
 }
@@ -104,7 +118,13 @@ func storageClass(sc string) *string {
 // NewTenant will return a new Tenant for a MinIO Operator
 func NewTenant(opts *TenantOptions, userSecret *v1.Secret) (*miniov2.Tenant, error) {
 	autoCert := !opts.DisableTLS
-	volumesPerServer := helpers.VolumesPerServer(opts.Volumes, opts.Servers)
+	// Derive Volumes or VolumesPerServer in the absence of the other
+	// Exclusively either variable is guaranteed to exist
+	if opts.Volumes == 0 {
+		opts.Volumes = opts.VolumesPerServer * opts.Servers
+	} else {
+		opts.VolumesPerServer = helpers.VolumesPerServer(opts.Volumes, opts.Servers)
+	}
 	capacityPerVolume, err := helpers.CapacityPerVolume(opts.Capacity, opts.Volumes)
 	if err != nil {
 		return nil, err
@@ -128,12 +148,12 @@ func NewTenant(opts *TenantOptions, userSecret *v1.Secret) (*miniov2.Tenant, err
 				Console: opts.ExposeConsoleService,
 				MinIO:   opts.ExposeMinioService,
 			},
-			Pools:           []miniov2.Pool{Pool(opts, volumesPerServer, *capacityPerVolume)},
+			Pools:           []miniov2.Pool{Pool(opts, opts.VolumesPerServer, *capacityPerVolume)},
 			RequestAutoCert: &autoCert,
 			Mountpath:       helpers.MinIOMountPath,
 			KES:             tenantKESConfig(opts.Name, opts.KmsSecret, opts.KesImage),
 			ImagePullSecret: v1.LocalObjectReference{Name: opts.ImagePullSecret},
-			Users: []*v1.LocalObjectReference{
+			Users: []v1.LocalObjectReference{
 				{
 					Name: userSecret.Name,
 				},

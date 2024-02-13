@@ -22,8 +22,10 @@ import {
   Button,
   CircleIcon,
   EditIcon,
+  Grid,
   MinIOTierIconXs,
   PageLayout,
+  ProgressBar,
   RefreshIcon,
   ScreenTitle,
   Tabs,
@@ -38,33 +40,24 @@ import {
   useNavigate,
   useParams,
 } from "react-router-dom";
-import { Theme } from "@mui/material/styles";
-import createStyles from "@mui/styles/createStyles";
-import withStyles from "@mui/styles/withStyles";
-import Grid from "@mui/material/Grid";
-import {
-  containerForHeader,
-  pageContentStyles,
-  tenantDetailsStyles,
-} from "../../Common/FormComponents/common/styleLibrary";
+import styled from "styled-components";
+import get from "lodash/get";
 import { AppState, useAppDispatch } from "../../../../store";
 import { niceBytes } from "../../../../common/utils";
-import withSuspense from "../../Common/Components/withSuspense";
 import { IAM_PAGES } from "../../../../common/SecureComponent/permissions";
 import { setSnackBarMessage } from "../../../../systemSlice";
 import { setTenantName } from "../tenantsSlice";
 import { getTenantAsync } from "../thunks/tenantDetailsAsync";
-import { LinearProgress } from "@mui/material";
+import { tenantIsOnline } from "./utils";
+import withSuspense from "../../Common/Components/withSuspense";
 import TooltipWrapper from "../../Common/TooltipWrapper/TooltipWrapper";
 import PageHeaderWrapper from "../../Common/PageHeaderWrapper/PageHeaderWrapper";
-import { tenantIsOnline } from "./utils";
 
 const TenantYAML = withSuspense(React.lazy(() => import("./TenantYAML")));
 const TenantSummary = withSuspense(React.lazy(() => import("./TenantSummary")));
 const TenantLicense = withSuspense(React.lazy(() => import("./TenantLicense")));
 const PoolsSummary = withSuspense(React.lazy(() => import("./PoolsSummary")));
 const PodsSummary = withSuspense(React.lazy(() => import("./PodsSummary")));
-
 const TenantEvents = withSuspense(React.lazy(() => import("./TenantEvents")));
 const TenantCSR = withSuspense(React.lazy(() => import("./TenantCSR")));
 const VolumesSummary = withSuspense(
@@ -93,61 +86,27 @@ const TenantConfiguration = withSuspense(
   React.lazy(() => import("./TenantConfiguration")),
 );
 
-interface ITenantDetailsProps {
-  classes: any;
-}
+const HealthsStatusIcon = styled.div(({ theme }) => ({
+  position: "relative",
+  fontSize: 10,
+  left: 26,
+  height: 10,
+  top: 4,
+  "& .statusIcon": {
+    color: get(theme, "signalColors.disabled", "#E6EBEB"),
+    "&.red": {
+      color: get(theme, "signalColors.danger", "#C51B3F"),
+    },
+    "&.yellow": {
+      color: get(theme, "signalColors.warning", "#FFBD62"),
+    },
+    "&.green": {
+      color: get(theme, "signalColors.good", "#4CCB92"),
+    },
+  },
+}));
 
-const styles = (theme: Theme) =>
-  createStyles({
-    ...tenantDetailsStyles,
-    pageContainer: {
-      border: "1px solid #EAEAEA",
-      width: "100%",
-      height: "100%",
-    },
-    contentSpacer: {
-      ...pageContentStyles.contentSpacer,
-      minHeight: 400,
-    },
-    redState: {
-      color: theme.palette.error.main,
-      "& .min-icon": {
-        width: 16,
-        height: 16,
-      },
-    },
-    yellowState: {
-      color: theme.palette.warning.main,
-      "& .min-icon": {
-        width: 16,
-        height: 16,
-      },
-    },
-    greenState: {
-      color: theme.palette.success.main,
-      "& .min-icon": {
-        width: 16,
-        height: 16,
-      },
-    },
-    greyState: {
-      color: "grey",
-      "& .min-icon": {
-        width: 16,
-        height: 16,
-      },
-    },
-    healthStatusIcon: {
-      position: "relative",
-      fontSize: 10,
-      left: 26,
-      height: 10,
-      top: 4,
-    },
-    ...containerForHeader,
-  });
-
-const TenantDetails = ({ classes }: ITenantDetailsProps) => {
+const TenantDetails = () => {
   const dispatch = useAppDispatch();
   const params = useParams();
   const navigate = useNavigate();
@@ -211,16 +170,6 @@ const TenantDetails = ({ classes }: ITenantDetailsProps) => {
     }
   };
 
-  const healthStatusToClass = (health_status: string) => {
-    return health_status === "red"
-      ? classes.redState
-      : health_status === "yellow"
-        ? classes.yellowState
-        : health_status === "green"
-          ? classes.greenState
-          : classes.greyState;
-  };
-
   return (
     <Fragment>
       {deleteOpen && tenantInfo !== null && (
@@ -240,30 +189,33 @@ const TenantDetails = ({ classes }: ITenantDetailsProps) => {
             />
           </Fragment>
         }
-        actions={<React.Fragment />}
+        actions={<Fragment />}
       />
 
-      <PageLayout className={classes.pageContainer}>
+      <PageLayout variant={"constrained"}>
         {loadingTenant && (
           <Grid item xs={12}>
-            <LinearProgress />
+            <ProgressBar />
           </Grid>
         )}
-        <Grid item xs={12}>
+        <Box
+          withBorders={true}
+          customBorderPadding={"0px"}
+          sx={{ borderBottom: 0 }}
+        >
           <ScreenTitle
             icon={
               <Fragment>
-                <div className={classes.healthStatusIcon}>
+                <HealthsStatusIcon>
                   {tenantInfo && tenantInfo.status && (
                     <span
-                      className={healthStatusToClass(
-                        tenantInfo.status?.health_status!,
-                      )}
+                      className={`statusIcon ${tenantInfo.status
+                        ?.health_status!}`}
                     >
-                      <CircleIcon />
+                      <CircleIcon style={{ width: 15, height: 15 }} />
                     </span>
                   )}
-                </div>
+                </HealthsStatusIcon>
                 <TenantsIcon />
               </Fragment>
             }
@@ -327,47 +279,42 @@ const TenantDetails = ({ classes }: ITenantDetailsProps) => {
               </Box>
             }
           />
-        </Grid>
+        </Box>
 
         <Tabs
           currentTabOrPath={pathname}
           useRouteTabs
           onTabClick={(route) => navigate(route)}
           routes={
-            <div className={classes.contentSpacer}>
-              <Routes>
-                <Route path={"summary"} element={<TenantSummary />} />
-                <Route
-                  path={"configuration"}
-                  element={<TenantConfiguration />}
-                />
-                <Route path={`summary/yaml`} element={<TenantYAML />} />
-                <Route path={"metrics"} element={<TenantMetrics />} />
-                <Route path={"trace"} element={<TenantTrace />} />
-                <Route
-                  path={"identity-provider"}
-                  element={<TenantIdentityProvider />}
-                />
-                <Route path={"security"} element={<TenantSecurity />} />
-                <Route path={"encryption"} element={<TenantEncryption />} />
-                <Route path={"pools"} element={<PoolsSummary />} />
-                <Route path={"pods/:podName"} element={<PodDetails />} />
-                <Route path={"pods"} element={<PodsSummary />} />
-                <Route path={"pvcs/:PVCName"} element={<TenantVolumes />} />
-                <Route path={"volumes"} element={<VolumesSummary />} />
-                <Route path={"license"} element={<TenantLicense />} />
-                <Route path={"events"} element={<TenantEvents />} />
-                <Route path={"csr"} element={<TenantCSR />} />
-                <Route
-                  path={"/"}
-                  element={
-                    <Navigate
-                      to={`/namespaces/${tenantNamespace}/tenants/${tenantName}/summary`}
-                    />
-                  }
-                />
-              </Routes>
-            </div>
+            <Routes>
+              <Route path={"summary"} element={<TenantSummary />} />
+              <Route path={"configuration"} element={<TenantConfiguration />} />
+              <Route path={`summary/yaml`} element={<TenantYAML />} />
+              <Route path={"metrics"} element={<TenantMetrics />} />
+              <Route path={"trace"} element={<TenantTrace />} />
+              <Route
+                path={"identity-provider"}
+                element={<TenantIdentityProvider />}
+              />
+              <Route path={"security"} element={<TenantSecurity />} />
+              <Route path={"encryption"} element={<TenantEncryption />} />
+              <Route path={"pools"} element={<PoolsSummary />} />
+              <Route path={"pods/:podName"} element={<PodDetails />} />
+              <Route path={"pods"} element={<PodsSummary />} />
+              <Route path={"pvcs/:PVCName"} element={<TenantVolumes />} />
+              <Route path={"volumes"} element={<VolumesSummary />} />
+              <Route path={"license"} element={<TenantLicense />} />
+              <Route path={"events"} element={<TenantEvents />} />
+              <Route path={"csr"} element={<TenantCSR />} />
+              <Route
+                path={"/"}
+                element={
+                  <Navigate
+                    to={`/namespaces/${tenantNamespace}/tenants/${tenantName}/summary`}
+                  />
+                }
+              />
+            </Routes>
           }
           options={[
             {
@@ -462,4 +409,4 @@ const TenantDetails = ({ classes }: ITenantDetailsProps) => {
   );
 };
 
-export default withStyles(styles)(TenantDetails);
+export default TenantDetails;

@@ -19,21 +19,21 @@ secrets:
   name: myminio-env-configuration
   accessKey: minio 
   secretKey: minio123
-###
-# The name of an existing Kubernetes secret to import to the MinIO Tenant
-# The secret must contain a key ``config.env``.
-# The values should be a series of export statements to set environment variables for the Tenant.
-# For example:
-#
-# .. code-block:: shell
-#
-#    stringData:
-#       config.env: | -
-#         export MINIO_ROOT_USER=ROOTUSERNAME
-#         export MINIO_ROOT_PASSWORD=ROOTUSERPASSWORD
-#
-existingSecret:
-  name: myminio-env-configuration
+  ###
+  # The name of an existing Kubernetes secret to import to the MinIO Tenant
+  # The secret must contain a key ``config.env``.
+  # The values should be a series of export statements to set environment variables for the Tenant.
+  # For example:
+  #
+  # .. code-block:: shell
+  #
+  #    stringData:
+  #       config.env: | -
+  #         export MINIO_ROOT_USER=ROOTUSERNAME
+  #         export MINIO_ROOT_PASSWORD=ROOTUSERPASSWORD
+  #
+  #existingSecret:
+  #  name: myminio-env-configuration
 ###
 # Root key for MinIO Tenant Chart
 tenant:
@@ -45,14 +45,14 @@ tenant:
   ###
   # Specify the Operator container image to use for the deployment.
   # ``image.tag`` 
-  # For example, the following sets the image to the ``quay.io/minio/operator`` repo and the v5.0.11 tag.
+  # For example, the following sets the image to the ``quay.io/minio/operator`` repo and the v5.0.12 tag.
   # The container pulls the image if not already present:
   #
   # .. code-block:: yaml
   # 
   #    image:
   #       repository: quay.io/minio/minio
-  #       tag: RELEASE.2023-11-15T20-43-25Z
+  #       tag: RELEASE.2024-02-09T21-25-16Z
   #       pullPolicy: IfNotPresent
   #
   # The chart also supports specifying an image based on digest value:
@@ -67,7 +67,7 @@ tenant:
   #
   image:
     repository: quay.io/minio/minio
-    tag: RELEASE.2023-11-15T20-43-25Z
+    tag: RELEASE.2024-02-09T21-25-16Z
     pullPolicy: IfNotPresent
   ###
   #
@@ -109,7 +109,10 @@ tenant:
       # If using Amazon Elastic Block Store (EBS) CSI driver
       # Please make sure to set xfs for "csi.storage.k8s.io/fstype" parameter under StorageClass.parameters.
       # Docs: https://github.com/kubernetes-sigs/aws-ebs-csi-driver/blob/master/docs/parameters.md
-      storageClassName: standard
+      # storageClassName: standard
+      ###
+      # Specify `storageAnnotations <https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/>`__ to associate to PVCs.
+      storageAnnotations: { }
       ###
       # Specify `annotations <https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/>`__ to associate to Tenant pods.
       annotations: { }
@@ -332,14 +335,14 @@ tenant:
   #  # Image from tag (original behavior), for example:
   #  # image:
   #  #   repository: quay.io/minio/kes
-  #  #   tag: 2023-11-10T10-44-28Z
+  #  #   tag: 2024-01-11T13-09-29Z
   #  # Image from digest (added after original behavior), for example:
   #  # image:
   #  #   repository: quay.io/minio/kes@sha256
   #  #   digest: fb15af611149892f357a8a99d1bcd8bf5dae713bd64c15e6eb27fbdb88fc208b
   #  image:
   #    repository: quay.io/minio/kes
-  #    tag: 2023-11-10T10-44-28Z
+  #    tag: 2024-01-11T13-09-29Z
   #    pullPolicy: IfNotPresent
   #  env: [ ]
   #  replicas: 2
