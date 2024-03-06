@@ -266,15 +266,6 @@ func NewController(
 			}
 		}
 	}
-	if len(oprImg) > 0 {
-		imageInfo := strings.Split(oprImg, ":")
-		if len(imageInfo) == 2 {
-			_, err = kubeClientSet.AppsV1().Deployments(ns).Patch(ctx, getOperatorDeploymentName(), types.MergePatchType, []byte(`{"metadata":{"annotations":{"min.io/operator":"`+imageInfo[1]+`"}}}`), metav1.PatchOptions{})
-			if err != nil {
-				klog.Errorf("Patch operator deployments annotations['min.io/operator':'%s'] err: %s", imageInfo[1], err)
-			}
-		}
-	}
 
 	oprImg = env.Get(DefaultOperatorImageEnv, oprImg)
 
@@ -318,6 +309,8 @@ func NewController(
 				statefulSetInformer.Lister(),
 				recorder,
 				queue.NewNamedRateLimitingQueue(MinIOControllerRateLimiter(), "Tenants"),
+				minioClientSet,
+				k8sClient,
 			),
 		},
 	}
@@ -459,13 +452,7 @@ func leaderRun(ctx context.Context, c *Controller, threadiness int, stopCh <-cha
 		panic("failed to wait for caches to sync")
 	}
 
-	klog.Info("Starting workers")
-	// Launch two workers to process Tenant resources
-	for i := 0; i < threadiness; i++ {
-		go wait.Until(c.runWorker, time.Second, stopCh)
-	}
-
-	klog.Info("Starting Job workers")
+	klog.Info("Starting workers and Job workers")
 	JobController := c.controllers[0]
 	// fmt.Println(controller.SyncHandler())
 	// Launch two workers to process Job resources
@@ -780,7 +767,6 @@ func key2NamespaceName(key string) (namespace, name string) {
 // converge the two. It then updates the Status block of the Tenant resource
 // with the current status of the resource.
 func (c *Controller) syncHandler(key string) (Result, error) {
-	klog.Info("MinIO Tenant Main loop!!!!")
 	ctx := context.Background()
 	cOpts := metav1.CreateOptions{}
 	uOpts := metav1.UpdateOptions{}
@@ -1418,6 +1404,8 @@ func (c *Controller) syncHandler(key string) (Result, error) {
 			return WrapResult(Result{RequeueAfter: time.Second * 5}, err)
 		} else if create {
 			c.recorder.Event(tenant, corev1.EventTypeNormal, "BucketsCreated", "Buckets created")
+		} else {
+			c.recorder.Event(tenant, corev1.EventTypeNormal, "BucketsCreated", "Buckets already exist")
 		}
 	}
 

@@ -63,7 +63,6 @@ for catalog in "${redhatCatalogs[@]}"; do
     --output-dir bundles/$catalog/$RELEASE \
     --channels stable \
     --overwrite \
-    --use-image-digests \
     --kustomize-dir config/manifests
 
   # Set the version, later in olm-post-script.sh we change for Digest form.
@@ -85,7 +84,7 @@ for catalog in "${redhatCatalogs[@]}"; do
     # You can read the documentation at link below:
     # https://access.redhat.com/documentation/en-us/openshift_container_platform/4.2/html/operators/understanding-the-operator-lifecycle-manager-olm#olm-upgrades_olm-understanding-olm
     echo "To provide replacement for upgrading Operator..."
-    PREV_VERSION=$(curl -s "https://catalog.redhat.com/api/containers/v1/operators/bundles?channel_name=stable&package=${package}&organization=${catalog}&include=data.version,data.csv_name,data.ocp_version" | jq '.data | max_by(.version).csv_name' -r)
+    PREV_VERSION=$(curl -s "https://catalog.redhat.com/api/containers/v1/operators/bundles?channel_name=stable&package=${package}&organization=${catalog}&ocp_version=${maxOpenshiftVersion}&include=data.version,data.csv_name,data.ocp_version" | jq '.data | max_by(.version).csv_name' -r)
     echo "replaces: $PREV_VERSION"
     yq -i e ".spec.replaces |= \"${PREV_VERSION}\"" bundles/$catalog/$RELEASE/manifests/$package.clusterserviceversion.yaml
   else

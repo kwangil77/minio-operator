@@ -6,12 +6,16 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/minio/minio-go/v7/pkg/set"
-	"k8s.io/apimachinery/pkg/api/meta"
-
+	"github.com/minio/operator/pkg/apis/job.min.io/v1alpha1"
+	miniov2 "github.com/minio/operator/pkg/apis/minio.min.io/v2"
+	clientset "github.com/minio/operator/pkg/client/clientset/versioned"
 	jobinformers "github.com/minio/operator/pkg/client/informers/externalversions/job.min.io/v1alpha1"
 	joblisters "github.com/minio/operator/pkg/client/listers/job.min.io/v1alpha1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -19,8 +23,8 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
-	queue "k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // JobController struct watches the Kubernetes API for changes to Tenant resources
@@ -31,16 +35,9 @@ type JobController struct {
 	kubeClientSet     kubernetes.Interface
 	statefulSetLister appslisters.StatefulSetLister
 	recorder          record.EventRecorder
-	workqueue         queue.RateLimitingInterface
-}
-
-// JobControllerInterface is an interface for the controller with the methods supported by it.
-type JobControllerInterface interface {
-	WorkQueue() workqueue.RateLimitingInterface
-	KeyFunc() cache.KeyFunc
-	HasSynced() cache.InformerSynced
-	SyncHandler(ctx context.Context, name, namespace string) error
-	HandleObject(obj metav1.Object)
+	workqueue         workqueue.RateLimitingInterface
+	minioClientSet    clientset.Interface
+	k8sClient         client.Client
 }
 
 // runWorker is a long-running function that will continually call the
@@ -84,13 +81,31 @@ func (c *JobController) processNextJobWorkItem() bool {
 			runtime.HandleError(fmt.Errorf("expected string in workqueue but got %#v", obj))
 			return nil
 		}
-		klog.V(2).Infof("Key from workqueue: %s", key)
 
-		c.SyncHandler(key)
+		// Run the syncHandler, passing it the namespace/name string of the tenant.
+		result, err := c.SyncHandler(key)
+		switch {
+		case err != nil:
+			c.workqueue.AddRateLimited(key)
+			return fmt.Errorf("error syncing '%s': %s", key, err.Error())
+		case result.RequeueAfter > 0:
+			// The result.RequeueAfter request will be lost, if it is returned
+			// along with a non-nil error. But this is intended as
+			// We need to drive to stable reconcile loops before queuing due
+			// to result.RequestAfter
+			c.workqueue.Forget(obj)
+			c.workqueue.AddAfter(key, result.RequeueAfter)
+		case result.Requeue:
+			c.workqueue.AddRateLimited(key)
+		default:
+			// Finally, if no error occurs we Forget this item so it does not
+			// get queued again until another change happens.
+			c.workqueue.Forget(obj)
+		}
+
 		// Finally, if no error occurs we Forget this item so it does not
 		// get queued again until another change happens.
 		c.workqueue.Forget(obj)
-		klog.V(4).Infof("Successfully synced '%s'", key)
 		return nil
 	}
 
@@ -131,7 +146,9 @@ func NewJobController(
 	kubeClientSet kubernetes.Interface,
 	statefulSetLister appslisters.StatefulSetLister,
 	recorder record.EventRecorder,
-	workqueue queue.RateLimitingInterface,
+	workqueue workqueue.RateLimitingInterface,
+	minioClientSet clientset.Interface,
+	k8sClient client.Client,
 ) *JobController {
 	controller := &JobController{
 		namespacesToWatch: namespacesToWatch,
@@ -141,6 +158,8 @@ func NewJobController(
 		statefulSetLister: statefulSetLister,
 		recorder:          recorder,
 		workqueue:         workqueue,
+		minioClientSet:    minioClientSet,
+		k8sClient:         k8sClient,
 	}
 
 	// Set up an event handler for when resources change
@@ -183,8 +202,56 @@ func (c *JobController) HandleObject(obj metav1.Object) {
 // SyncHandler compares the current Job state with the desired, and attempts to
 // converge the two. It then updates the Status block of the Job resource
 // with the current status of the resource.
-func (c *JobController) SyncHandler(key string) error {
-	klog.Info("Job Controller Loop!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+func (c *JobController) SyncHandler(key string) (Result, error) {
+	// Convert the namespace/name string into a distinct namespace and name
+	if key == "" {
+		runtime.HandleError(fmt.Errorf("Invalid resource key: %s", key))
+		return WrapResult(Result{}, nil)
+	}
+	namespace, jobName := key2NamespaceName(key)
+	ctx := context.Background()
+	jobCR := v1alpha1.MinIOJob{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName,
+			Namespace: namespace,
+		},
+	}
+	err := c.k8sClient.Get(ctx, client.ObjectKeyFromObject(&jobCR), &jobCR)
+	if err != nil {
+		// job cr have gone
+		if errors.IsNotFound(err) {
+			return WrapResult(Result{}, nil)
+		}
+		return WrapResult(Result{}, err)
+	}
+	// get tenant
+	tenant := &miniov2.Tenant{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: jobCR.Spec.TenantRef.Namespace,
+			Name:      jobCR.Spec.TenantRef.Name,
+		},
+	}
+	err = c.k8sClient.Get(ctx, client.ObjectKeyFromObject(tenant), tenant)
+	if err != nil {
+		jobCR.Status.Phase = "Error"
+		jobCR.Status.Message = fmt.Sprintf("Get tenant %s/%s error:%v", jobCR.Spec.TenantRef.Namespace, jobCR.Spec.TenantRef.Name, err)
+		err = c.updateJobStatus(ctx, &jobCR)
+		return WrapResult(Result{}, err)
+	}
+	if tenant.Status.HealthStatus != miniov2.HealthStatusGreen {
+		return WrapResult(Result{RequeueAfter: time.Second * 5}, nil)
+	}
+	fmt.Println("will do somthing next")
+	// Loop through the different supported operations.
+	for _, val := range jobCR.Spec.Commands {
+		operation := val.Operation
+		if operation == "make-bucket" {
+			// TODO: Initiate a job to create the bucket(s) if they do not exist and if the Tenant is prepared for it.
+		}
+	}
+	return WrapResult(Result{}, err)
+}
 
-	return nil
+func (c *JobController) updateJobStatus(ctx context.Context, job *v1alpha1.MinIOJob) error {
+	return c.k8sClient.Status().Update(ctx, job)
 }

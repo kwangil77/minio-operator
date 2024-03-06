@@ -32,7 +32,7 @@ metadata:
               "bucketDNS": false,
               "domains": {}
             },
-            "image": "quay.io/minio/minio@sha256:91866cdaad4cc11d2f86056b234f33f3768a44adc600ea37c225708c83076bc3",
+            "image": "quay.io/minio/minio:RELEASE.2024-03-05T04-48-44Z",
             "imagePullSecret": {},
             "mountPath": "/export",
             "podManagementPolicy": "Parallel",
@@ -91,8 +91,8 @@ metadata:
     operators.operatorframework.io/builder: operator-sdk-v1.22.2
     operators.operatorframework.io/project_layout: unknown
     repository: https://github.com/minio/operator
-    containerImage: quay.io/minio/operator:v5.0.12
-  name: minio-operator-rhmp.v5.0.12
+    containerImage: quay.io/minio/operator:v5.0.13
+  name: minio-operator-rhmp.v5.0.13
   namespace: minio-operator
 spec:
   apiservicedefinitions: {}
@@ -555,6 +555,7 @@ spec:
         - label:
             app.kubernetes.io/instance: minio-operator
             app.kubernetes.io/name: operator
+            min.io/operator: v5.0.13
           name: console
           spec:
             replicas: 1
@@ -577,7 +578,7 @@ spec:
                   - args:
                       - ui
                       - --certs-dir=/tmp/certs
-                    image: quay.io/minio/operator:v5.0.12
+                    image: quay.io/minio/operator:v5.0.13
                     imagePullPolicy: IfNotPresent
                     name: console
                     ports:
@@ -617,6 +618,7 @@ spec:
         - label:
             app.kubernetes.io/instance: minio-operator
             app.kubernetes.io/name: operator
+            min.io/operator: v5.0.13
           name: minio-operator
           spec:
             replicas: 1
@@ -656,7 +658,7 @@ spec:
                         value: "on"
                       - name: OPERATOR_STS_ENABLED
                         value: "on"
-                    image: quay.io/minio/operator:v5.0.12
+                    image: quay.io/minio/operator:v5.0.13
                     imagePullPolicy: IfNotPresent
                     name: minio-operator
                     resources:
@@ -773,12 +775,5 @@ spec:
   provider:
     name: MinIO Inc
     url: https://min.io
-  relatedImages:
-    - image: minio/operator@sha256:3ab501c476f269c4e4fc84017543ff7f6c8209ed474d77de472311472ba2e2ff
-      name: console
-    - image: minio/operator@sha256:3ab501c476f269c4e4fc84017543ff7f6c8209ed474d77de472311472ba2e2ff
-      name: minio-operator
-    - image: quay.io/minio/minio@sha256:91866cdaad4cc11d2f86056b234f33f3768a44adc600ea37c225708c83076bc3
-      name: minio-91866cdaad4cc11d2f86056b234f33f3768a44adc600ea37c225708c83076bc3-annotation
-  version: 5.0.12
-  replaces: minio-operator-rhmp.v5.0.9
+  version: 5.0.13
+  replaces: minio-operator-rhmp.v5.0.12
