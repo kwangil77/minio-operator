@@ -34,6 +34,7 @@ const (
 // +kubebuilder:resource:scope=Namespaced,shortName=miniojob,singular=miniojob
 // +kubebuilder:printcolumn:name="Tenant",type=string,JSONPath=`.spec.tenant.name`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.spec.status.phase`
+// +kubebuilder:metadata:annotations=operator.min.io/version=v5.0.14
 
 // MinIOJob is a top-level type. A client is created for it
 type MinIOJob struct {
@@ -91,6 +92,11 @@ type MinIOJobSpec struct {
 	//
 	// Commands List of MinioClient commands
 	Commands []CommandSpec `json:"commands"`
+
+	// mc job image
+	// +optional
+	// +kubebuilder:default="minio/mc:latest"
+	MCImage string `json:"mcImage,omitempty"`
 }
 
 // CommandSpec (`spec`) defines the configuration of a MinioClient Command.
