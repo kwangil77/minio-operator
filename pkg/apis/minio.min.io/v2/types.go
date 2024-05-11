@@ -30,7 +30,7 @@ import (
 // +kubebuilder:resource:scope=Namespaced,shortName=tenant,singular=tenant
 // +kubebuilder:printcolumn:name="State",type="string",JSONPath=".status.currentState"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
-// +kubebuilder:metadata:annotations=operator.min.io/version=v5.0.14
+// +kubebuilder:metadata:annotations=operator.min.io/version=v5.0.15
 // +kubebuilder:storageversion
 type Tenant struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -98,6 +98,8 @@ type Features struct {
 // For more complete documentation on this object, see the https://min.io/docs/minio/kubernetes/upstream/operations/installation.html[MinIO Kubernetes Documentation]. +
 type TenantSpec struct {
 	// *Required* +
+	// +listType=map
+	// +listMapKey=name
 	//
 	// An array of objects describing each MinIO server pool deployed in the MinIO Tenant. Each pool consists of a set of MinIO server pods which "pool" their storage resources for supporting object storage and retrieval requests. Each server pool is independent of all others and supports horizontal scaling of available storage resources in the MinIO Tenant. +
 	//
@@ -254,6 +256,10 @@ type TenantSpec struct {
 	// Startup Probe allows to configure a max grace period for a pod to start before getting traffic routed to it.
 	// +optional
 	Startup *corev1.Probe `json:"startup,omitempty"`
+
+	// Lifecycle hooks for container.
+	// +optional
+	Lifecycle *corev1.Lifecycle `json:"lifecycle,omitempty"`
 
 	// S3 related features can be disabled or enabled such as `bucketDNS` etc.
 	Features *Features `json:"features,omitempty"`
@@ -609,18 +615,19 @@ type CustomCertificateConfig struct {
 //
 // See the https://min.io/docs/minio/kubernetes/upstream/operations/install-deploy-manage/deploy-minio-tenant.html#procedure-command-line[MinIO Operator CRD] reference for the `pools` object for examples and more complete documentation. +
 type Pool struct {
-	// *Optional* +
+	// *Required*
 	//
 	// Specify the name of the pool. The Operator automatically generates the pool name if this field is omitted.
-	// +optional
-	Name string `json:"name,omitempty"`
+	Name string `json:"name"`
 	// *Required*
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="servers is immutable"
 	//
 	// The number of MinIO server pods to deploy in the pool. The minimum value is `2`.
 	//
 	// The MinIO Operator requires a minimum of `4` volumes per pool. Specifically, the result of `pools.servers X pools.volumesPerServer` must be greater than `4`. +
 	Servers int32 `json:"servers"`
 	// *Required* +
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="volumesPerServer is immutable"
 	//
 	// The number of Persistent Volume Claims to generate for each MinIO server pod in the pool. +
 	//

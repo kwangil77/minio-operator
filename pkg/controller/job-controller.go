@@ -1,11 +1,26 @@
 // This file is part of MinIO Operator
 // Copyright (c) 2024 MinIO, Inc.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 package controller
 
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"sync"
 	"time"
 
 	"github.com/minio/minio-go/v7/pkg/set"
@@ -14,7 +29,9 @@ import (
 	stsv1alpha1 "github.com/minio/operator/pkg/apis/sts.min.io/v1alpha1"
 	jobinformers "github.com/minio/operator/pkg/client/informers/externalversions/job.min.io/v1alpha1"
 	joblisters "github.com/minio/operator/pkg/client/listers/job.min.io/v1alpha1"
+	"github.com/minio/operator/pkg/utils/miniojob"
 	batchjobv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -107,12 +124,33 @@ func NewJobController(
 
 	jobInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		UpdateFunc: func(old, new interface{}) {
-			oldJob := old.(*batchjobv1.Job)
 			newJob := new.(*batchjobv1.Job)
-			if oldJob.ResourceVersion == newJob.ResourceVersion {
+			jobName, ok := newJob.Labels[miniojob.MinioJobName]
+			if !ok {
 				return
 			}
-			// todo record the job status.
+			jobCRName, ok := newJob.Labels[miniojob.MinioJobCRName]
+			if !ok {
+				return
+			}
+			val, ok := globalIntervalJobStatus.Load(fmt.Sprintf("%s/%s", newJob.GetNamespace(), jobCRName))
+			if ok {
+				intervalJob := val.(*miniojob.MinIOIntervalJob)
+				command, ok := intervalJob.CommandMap[jobName]
+				if ok {
+					if newJob.Status.Succeeded > 0 {
+						command.SetStatus(true, "")
+					} else {
+						for _, condition := range newJob.Status.Conditions {
+							if condition.Type == batchjobv1.JobFailed {
+								command.SetStatus(false, condition.Message)
+								break
+							}
+						}
+					}
+				}
+			}
+			controller.HandleObject(newJob)
 		},
 	})
 	return controller
@@ -163,9 +201,26 @@ func (c *JobController) SyncHandler(key string) (Result, error) {
 	err := c.k8sClient.Get(ctx, client.ObjectKeyFromObject(&jobCR), &jobCR)
 	if err != nil {
 		// job cr have gone
+		globalIntervalJobStatus.Delete(fmt.Sprintf("%s/%s", jobCR.Namespace, jobCR.Name))
 		if errors.IsNotFound(err) {
 			return WrapResult(Result{}, nil)
 		}
+		return WrapResult(Result{}, err)
+	}
+
+	if !IsSTSEnabled() {
+		c.recorder.Eventf(&jobCR, corev1.EventTypeWarning, "STSDisabled", "JobCR cannot work with STS disabled")
+		return WrapResult(Result{}, nil)
+	}
+
+	// if job cr is Success, do nothing
+	if jobCR.Status.Phase == miniojob.MinioJobPhaseSuccess {
+		// delete the job status
+		globalIntervalJobStatus.Delete(fmt.Sprintf("%s/%s", jobCR.Namespace, jobCR.Name))
+		return WrapResult(Result{}, nil)
+	}
+	intervalJob, err := checkMinIOJob(&jobCR)
+	if err != nil {
 		return WrapResult(Result{}, err)
 	}
 	// get tenant
@@ -177,7 +232,7 @@ func (c *JobController) SyncHandler(key string) (Result, error) {
 	}
 	err = c.k8sClient.Get(ctx, client.ObjectKeyFromObject(tenant), tenant)
 	if err != nil {
-		jobCR.Status.Phase = "Error"
+		jobCR.Status.Phase = miniojob.MinioJobPhaseError
 		jobCR.Status.Message = fmt.Sprintf("Get tenant %s/%s error:%v", jobCR.Spec.TenantRef.Namespace, jobCR.Spec.TenantRef.Name, err)
 		err = c.updateJobStatus(ctx, &jobCR)
 		return WrapResult(Result{}, err)
@@ -203,16 +258,78 @@ func (c *JobController) SyncHandler(key string) (Result, error) {
 	if !saFound {
 		return WrapResult(Result{}, fmt.Errorf("no serviceaccount found"))
 	}
-	// Loop through the different supported operations.
-	for _, val := range jobCR.Spec.Commands {
-		operation := val.Operation
-		if operation == "make-bucket" {
-			// TODO: Initiate a job to create the bucket(s) if they do not exist and if the Tenant is prepared for it.
-		}
+	err = intervalJob.CreateCommandJob(ctx, c.k8sClient)
+	if err != nil {
+		jobCR.Status.Phase = miniojob.MinioJobPhaseError
+		jobCR.Status.Message = fmt.Sprintf("Create job error:%v", err)
+		err = c.updateJobStatus(ctx, &jobCR)
+		return WrapResult(Result{}, err)
 	}
+	// update status
+	jobCR.Status = intervalJob.GetMinioJobStatus(ctx)
+	err = c.updateJobStatus(ctx, &jobCR)
 	return WrapResult(Result{}, err)
 }
 
 func (c *JobController) updateJobStatus(ctx context.Context, job *v1alpha1.MinIOJob) error {
 	return c.k8sClient.Status().Update(ctx, job)
 }
+
+func checkMinIOJob(jobCR *v1alpha1.MinIOJob) (intervalJob *miniojob.MinIOIntervalJob, err error) {
+	defer func() {
+		if err != nil {
+			globalIntervalJobStatus.Delete(fmt.Sprintf("%s/%s", jobCR.Namespace, jobCR.Name))
+		}
+	}()
+	val, found := globalIntervalJobStatus.Load(fmt.Sprintf("%s/%s", jobCR.Namespace, jobCR.Name))
+	if found {
+		intervalJob = val.(*miniojob.MinIOIntervalJob)
+		if reflect.DeepEqual(intervalJob.JobCR.Spec, jobCR.Spec) {
+			intervalJob.JobCR.UID = jobCR.UID
+			return intervalJob, nil
+		}
+	}
+	intervalJob = &miniojob.MinIOIntervalJob{
+		JobCR:      jobCR.DeepCopy(),
+		Command:    []*miniojob.MinIOIntervalJobCommand{},
+		CommandMap: map[string]*miniojob.MinIOIntervalJobCommand{},
+	}
+	if jobCR.Spec.TenantRef.Namespace == "" {
+		return intervalJob, fmt.Errorf("tenant namespace is empty")
+	}
+	if jobCR.Spec.TenantRef.Name == "" {
+		return intervalJob, fmt.Errorf("tenant name is empty")
+	}
+	if jobCR.Spec.ServiceAccountName == "" {
+		return intervalJob, fmt.Errorf("serviceaccount name is empty")
+	}
+	for index, val := range jobCR.Spec.Commands {
+		mcCommand, found := miniojob.OperationAliasToMC(val.Operation)
+		if !found {
+			return intervalJob, fmt.Errorf("operation %s is not supported", val.Operation)
+		}
+		argsFuncs, found := miniojob.JobOperation[mcCommand]
+		if !found {
+			return intervalJob, fmt.Errorf("operation %s is not supported", mcCommand)
+		}
+		jobCommand, err := miniojob.GenerateMinIOIntervalJobCommand(mcCommand, index, val.DependsOn, val.Name, val.Args, argsFuncs)
+		if err != nil {
+			return intervalJob, err
+		}
+		intervalJob.Command = append(intervalJob.Command, jobCommand)
+		intervalJob.CommandMap[jobCommand.JobName] = jobCommand
+	}
+	// check all dependon
+	for _, command := range intervalJob.Command {
+		for _, dep := range command.DepnedsOn {
+			_, found := intervalJob.CommandMap[dep]
+			if !found {
+				return intervalJob, fmt.Errorf("dependent job %s not found", dep)
+			}
+		}
+	}
+	globalIntervalJobStatus.Store(fmt.Sprintf("%s/%s", jobCR.Namespace, jobCR.Name), intervalJob)
+	return intervalJob, nil
+}
+
+var globalIntervalJobStatus = sync.Map{}

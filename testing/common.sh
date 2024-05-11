@@ -529,6 +529,22 @@ function load_kind_images() {
     load_kind_image "$CONSOLE_RELEASE"
 }
 
+function create_restricted_namespace() {
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: "$1"
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+EOF
+}
+
 function install_operator() {
   # It requires compiled binary in minio-operator folder in order for docker build to work when copying this folder.
   # For that in the github actions you need to wait for operator test/step to get the binary.
@@ -550,9 +566,9 @@ function install_operator() {
     yq -i '.console.image.repository = "minio/operator"' "${SCRIPT_DIR}/../helm/operator/values.yaml"
     yq -i '.console.image.tag = "noop"' "${SCRIPT_DIR}/../helm/operator/values.yaml"
     echo "Installing Current Operator via HELM"
+    create_restricted_namespace minio-operator
     helm install \
       --namespace minio-operator \
-      --create-namespace \
       minio-operator ./helm/operator
 
     echo "key, value for pod selector in helm test"
@@ -566,8 +582,20 @@ function install_operator() {
     value=minio-operator
   else
     echo "Installing Current Operator"
-    # Created an overlay to use that image version from dev folder
-    try kubectl apply -k "${SCRIPT_DIR}/../testing/dev"
+    echo "When coming from the upgrade test, the operator is already installed."
+    operator_deployment=$(kubectl get deployment minio-operator -n minio-operator | grep -c minio-operator)
+    echo "Check whether we should reinstall it or simply change the images."
+    if [ "$operator_deployment" != 1 ]; then
+        echo "operator is not installed, will be installed"
+        try kubectl apply -k "${SCRIPT_DIR}/../resources" # we maintain just one spot, no new overlays
+    else
+        echo "Operator is not re-installed as is already installed"
+    fi
+
+    # and then we change the images, no need to have more overlays in different folders.
+    echo "changing images for console and minio-operator deployments"
+    try kubectl -n minio-operator set image deployment/minio-operator minio-operator="$TAG"
+    try kubectl -n minio-operator set image deployment/console console="$TAG"
 
     echo "key, value for pod selector in kustomize test"
     key=name
@@ -602,17 +630,10 @@ function install_operator_version() {
     version=$(curl https://api.github.com/repos/minio/operator/releases/latest | jq --raw-output '.tag_name | "\(.[1:])"')
   fi
   echo "Target operator release: $version"
-  # Set OPERATOR_DEV_TEST to skip downloading these dependencies
-  if [[ -z "${DEV_TEST}" ]]; then
-    sudo curl -#L "https://github.com/minio/operator/releases/download/v${version}/kubectl-minio_${version}_${OS}_${ARCH}" -o /usr/local/bin/kubectl-minio
-    sudo chmod +x /usr/local/bin/kubectl-minio
-  fi
 
   # Initialize the MinIO Kubernetes Operator
-  kubectl minio init
+  kubectl apply -k github.com/minio/operator/resources/\?ref=v"$version"
 
-  # Verify installation of the plugin
-  echo "Installed operator release: $(kubectl minio version)"
 
   if [ "$1" = "helm" ]; then
     echo "key, value for pod selector in helm test"
@@ -758,8 +779,9 @@ function install_tenant() {
     namespace=default
     key=v1.min.io/tenant
     value=myminio
+    create_restricted_namespace $namespace
     try helm install --namespace $namespace \
-      --create-namespace tenant ./helm/tenant
+      tenant ./helm/tenant
   elif [ "$1" = "logs" ]; then
     namespace="tenant-lite"
     key=v1.min.io/tenant
